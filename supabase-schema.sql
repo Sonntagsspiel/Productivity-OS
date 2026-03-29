@@ -1,5 +1,4 @@
--- Run this once in your Supabase SQL editor
--- Dashboard → SQL Editor → New query → paste → Run
+-- Run this in Supabase SQL Editor (safe to re-run)
 
 create table if not exists habits (
   id text primary key,
@@ -21,6 +20,7 @@ create table if not exists tasks (
   prio text not null default 'med',
   rollover boolean not null default false,
   done boolean not null default false,
+  done_at timestamptz,
   subs jsonb not null default '[]',
   due text default '',
   created_at timestamptz default now()
@@ -42,11 +42,11 @@ create table if not exists daily_summaries (
   life_score integer not null default 0,
   habit_score integer not null default 0,
   task_score integer not null default 0,
+  habits_snapshot jsonb default '[]',
+  tasks_snapshot jsonb default '[]',
   created_at timestamptz default now()
 );
 
--- Disable RLS for personal use (single user)
--- If you want auth later, enable RLS and add policies
 alter table habits disable row level security;
 alter table tasks disable row level security;
 alter table projects disable row level security;
