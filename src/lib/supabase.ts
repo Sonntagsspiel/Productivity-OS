@@ -10,28 +10,11 @@ export async function dbLoad(table: string) {
   return data
 }
 
-// Core upsert – always stringify JSON fields before sending
+// supabase-js handles jsonb columns natively as JS arrays/objects.
+// DO NOT JSON.stringify – passing a string to a jsonb column breaks upsert silently.
 export async function dbUpsert(table: string, rows: any[]) {
-  const safe = rows.map(r => {
-    const out: any = { ...r }
-    // Force JSON fields to be proper JSON strings for jsonb columns
-    if (table === 'tasks') {
-      out.subs = JSON.stringify(Array.isArray(r.subs) ? r.subs : [])
-    }
-    if (table === 'projects') {
-      out.items = JSON.stringify(Array.isArray(r.items) ? r.items : [])
-    }
-    if (table === 'daily_summaries') {
-      if (r.habits_snapshot) out.habits_snapshot = JSON.stringify(r.habits_snapshot)
-      if (r.tasks_snapshot) out.tasks_snapshot = JSON.stringify(r.tasks_snapshot)
-    }
-    return out
-  })
-  const { error } = await supabase.from(table).upsert(safe, { onConflict: 'id' })
-  if (error) {
-    console.error('upsert error', table, error)
-    throw error
-  }
+  const { error } = await supabase.from(table).upsert(rows, { onConflict: 'id' })
+  if (error) console.error('upsert error', table, error)
 }
 
 export async function dbDelete(table: string, id: string) {
@@ -48,8 +31,8 @@ export async function saveDailySummary(
     life_score: lifeScore,
     habit_score: habitScore,
     task_score: taskScore,
-    habits_snapshot: JSON.stringify(habitsSnapshot),
-    tasks_snapshot: JSON.stringify(tasksSnapshot),
+    habits_snapshot: habitsSnapshot,   // native array, not stringified
+    tasks_snapshot: tasksSnapshot,     // native array, not stringified
   }, { onConflict: 'date' })
   if (error) console.error('summary error', error)
 }
