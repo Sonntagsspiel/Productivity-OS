@@ -156,9 +156,9 @@ export default function App() {
         const [h, t, p, hist] = await Promise.all([
           dbLoad('habits'), dbLoad('tasks'), dbLoad('projects'), loadHistory()
         ])
-        if (h?.length) setHabits(h.map((r: any) => ({ ...r, active_days: r.active_days || [0,1,2,3,4,5,6], current_val: r.current_val || 0 })))
-        if (t?.length) setTasks(t.map((r: any) => ({ ...r, subs: r.subs || [], due: r.due || '' })))
-        if (p?.length) setProjects(p.map((r: any) => ({ ...r, items: r.items || [] })))
+        if (h?.length) setHabits(h.map((r: any) => ({ ...r, active_days: Array.isArray(r.active_days)?r.active_days:[0,1,2,3,4,5,6], current_val: r.current_val || 0 })))
+        if (t?.length) setTasks(t.map((r: any) => ({ ...r, subs: Array.isArray(r.subs)?r.subs:(typeof r.subs==='string'?JSON.parse(r.subs):[]), due: r.due || '' })))
+        if (p?.length) setProjects(p.map((r: any) => ({ ...r, items: Array.isArray(r.items)?r.items:(typeof r.items==='string'?JSON.parse(r.items):[]) })))
         if (hist?.length) {
           setHistory(hist)
           let s = 0
@@ -378,8 +378,8 @@ export default function App() {
 
   // ── Row helpers ─────────────────────────────────────────
   function toHabitRow(h: Habit) { return { id: h.id, name: h.name, color: h.color, type: h.type, active_days: h.active_days, done: h.done, pct: h.pct, target: h.target, unit: h.unit, current_val: h.current_val } }
-  function toTaskRow(t: Task) { return { id: t.id, title: t.title, prio: t.prio, rollover: t.rollover, done: t.done, done_at: t.done_at || null, subs: t.subs, due: t.due } }
-  function toProjRow(p: Project) { return { id: p.id, name: p.name, color: p.color, deadline: p.deadline, status: p.status, items: p.items } }
+  function toTaskRow(t: Task) { return { id: t.id, title: t.title, prio: t.prio, rollover: t.rollover, done: t.done, done_at: t.done_at || null, subs: Array.isArray(t.subs) ? t.subs : [], due: t.due } }
+  function toProjRow(p: Project) { return { id: p.id, name: p.name, color: p.color, deadline: p.deadline, status: p.status, items: Array.isArray(p.items) ? p.items : [] } }
 
   // ── Sorted tasks ────────────────────────────────────────
   const activeTasks = tasks.filter(t => !t.done)
@@ -533,14 +533,16 @@ export default function App() {
             await dbUpsert('habits', [toHabitRow(h)]); setModal(null)
           }}
           onSaveTask={async (t) => {
-            if (modal.editId) setTasks(p => p.map(x => x.id === modal.editId ? t : x))
-            else setTasks(p => [...p, t])
-            await dbUpsert('tasks', [toTaskRow(t)]); setModal(null)
+            const clean = { ...t, subs: Array.isArray(t.subs) ? t.subs : [] }
+            if (modal.editId) setTasks(p => p.map(x => x.id === modal.editId ? clean : x))
+            else setTasks(p => [...p, clean])
+            await dbUpsert('tasks', [toTaskRow(clean)]); setModal(null)
           }}
           onSaveProject={async (p) => {
-            if (modal.editId) setProjects(prev => prev.map(x => x.id === modal.editId ? p : x))
-            else setProjects(prev => [...prev, p])
-            await dbUpsert('projects', [toProjRow(p)]); setModal(null)
+            const clean = { ...p, items: Array.isArray(p.items) ? p.items : [] }
+            if (modal.editId) setProjects(prev => prev.map(x => x.id === modal.editId ? clean : x))
+            else setProjects(prev => [...prev, clean])
+            await dbUpsert('projects', [toProjRow(clean)]); setModal(null)
           }} />
       )}
 
