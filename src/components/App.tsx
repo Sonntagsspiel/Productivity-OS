@@ -46,17 +46,19 @@ const DAILY_QUOTES = [
 const TODAY_DOW = (new Date().getDay() + 6) % 7
 const TOMORROW = new Date(Date.now() + 86400000).toISOString().split('T')[0]
 
+function todayStr() { return new Date().toISOString().split('T')[0] }
+
 function dueDiff(due: string): number | null {
   if (!due) return null
   const n = new Date(); n.setHours(0, 0, 0, 0)
   const d = new Date(due); d.setHours(0, 0, 0, 0)
   return Math.round((d.getTime() - n.getTime()) / 864e5)
 }
+
 function scoreColor(s: number) {
   if (!s) return '#1c2235'
   return `rgb(${Math.round(5 + (s / 100) * 17)},${Math.round(30 + (s / 100) * 202)},${Math.round(20 + (s / 100) * 74)})`
 }
-function todayStr() { return new Date().toISOString().split('T')[0] }
 
 // Sparkle emitter
 let _sc: HTMLDivElement | null = null
@@ -64,7 +66,7 @@ function emitSparkles(x?: number, y?: number) {
   if (typeof document === 'undefined') return
   if (!_sc) { _sc = document.createElement('div'); _sc.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:9999;overflow:hidden'; document.body.appendChild(_sc) }
   const cx = x ?? window.innerWidth / 2, cy = y ?? window.innerHeight / 3
-  const colors = ['#00e87a','#3d7fff','#9b6dff','#ffb830','#00d4c8','#ff4d6a']
+  const colors = ['#00e87a', '#3d7fff', '#9b6dff', '#ffb830', '#00d4c8', '#ff4d6a']
   for (let i = 0; i < 14; i++) {
     const el = document.createElement('div')
     const sz = 4 + Math.random() * 8
@@ -95,7 +97,7 @@ const DEFAULT_PROJECTS: Project[] = [
   { id: 'p1', name: 'Website Relaunch', color: 'blue', deadline: 'Q1 2026', status: 'on-track', items: [{ t: 'Design Mockups', d: true, subs: [] }, { t: 'Frontend', d: false, subs: [] }, { t: 'Launch', d: false, subs: [] }] },
 ]
 
-// ── useIsMobile hook ─────────────────────────────────────
+// ── useIsMobile ──────────────────────────────────────────
 function useIsMobile() {
   const [isMobile, setIsMobile] = useState(false)
   useEffect(() => {
@@ -105,6 +107,55 @@ function useIsMobile() {
     return () => window.removeEventListener('resize', check)
   }, [])
   return isMobile
+}
+
+// ── Row helpers ──────────────────────────────────────────
+function toHabitRow(h: Habit) {
+  return { id: h.id, name: h.name, color: h.color, type: h.type, active_days: h.active_days, done: h.done, pct: h.pct, target: h.target ?? null, unit: h.unit ?? null, current_val: h.current_val ?? 0 }
+}
+function toTaskRow(t: Task) {
+  return { id: t.id, title: t.title, prio: t.prio, rollover: t.rollover, done: t.done, done_at: t.done_at ?? null, subs: t.subs, due: t.due ?? '' }
+}
+function toProjRow(p: Project) {
+  return { id: p.id, name: p.name, color: p.color, deadline: p.deadline ?? '', status: p.status, items: p.items }
+}
+
+// ── SCORE LOGIC (FIX #2) ─────────────────────────────────
+// Task score rules:
+// - Only tasks with no due date OR due today OR overdue are "counted" in denominator
+// - Done tasks that were NOT in the denominator give bonus points (capped so score ≤ 100)
+// - Already-done tasks from previous days do NOT count
+function calcTaskScore(tasks: Task[]): number {
+  const today = todayStr()
+
+  // "Counted" tasks: no due date, or due today, or overdue (rollover)
+  const countedTasks = tasks.filter(t => {
+    if (!t.due) return true                    // no date → always counted
+    const diff = dueDiff(t.due)
+    if (diff === null) return true
+    return diff <= 0                           // today or overdue → counted
+  })
+
+  // "Bonus" tasks: due in the future, completed today
+  const bonusTasks = tasks.filter(t => {
+    if (!t.due) return false
+    const diff = dueDiff(t.due)
+    if (diff === null || diff <= 0) return false
+    return t.done && t.done_at && t.done_at.startsWith(today)
+  })
+
+  const maxP = countedTasks.reduce((a, t) => a + PW[t.prio], 0)
+  if (maxP === 0) return 0
+
+  // Earned from counted tasks done today
+  const earnedBase = countedTasks.filter(t => t.done && t.done_at && t.done_at.startsWith(today))
+    .reduce((a, t) => a + PW[t.prio], 0)
+
+  // Bonus points from future tasks done today
+  const earnedBonus = bonusTasks.reduce((a, t) => a + PW[t.prio], 0)
+
+  const raw = ((earnedBase + earnedBonus) / maxP) * 100
+  return Math.min(100, Math.round(raw))
 }
 
 // ── Main App ─────────────────────────────────────────────
@@ -118,7 +169,7 @@ export default function App() {
   const [loading, setLoading] = useState(true)
   const [taskSort, setTaskSort] = useState<SortMode>('prio')
   const [mobileTab, setMobileTab] = useState<MobileTab>('home')
-  const [modal, setModal] = useState<{ type: 'task'|'habit'|'project'; editId?: string } | null>(null)
+  const [modal, setModal] = useState<{ type: 'task' | 'habit' | 'project'; editId?: string } | null>(null)
   const [analysisOpen, setAnalysisOpen] = useState(false)
   const [manageOpen, setManageOpen] = useState(false)
   const [showSubs, setShowSubs] = useState<Record<string, boolean>>({})
@@ -161,9 +212,7 @@ export default function App() {
   const calcScores = useCallback(() => {
     const todayH = habits.filter(h => h.active_days.includes(TODAY_DOW))
     const hScore = todayH.length ? Math.round(todayH.reduce((a, h) => a + h.pct, 0) / todayH.length) : 0
-    const maxP = tasks.reduce((a, t) => a + PW[t.prio], 0)
-    const earnP = tasks.filter(t => t.done).reduce((a, t) => a + PW[t.prio], 0)
-    const tScore = maxP ? Math.round((earnP / maxP) * 100) : 0
+    const tScore = calcTaskScore(tasks)
     return { hScore, tScore, life: Math.round((hScore + tScore) / 2) }
   }, [habits, tasks])
 
@@ -184,90 +233,134 @@ export default function App() {
 
   const { hScore, tScore, life } = calcScores()
   const histScores = history.map(h => h.life_score)
-  const avg7 = histScores.length ? Math.round(histScores.slice(-7).reduce((a,b)=>a+b,0)/Math.min(7,histScores.slice(-7).length)) : 0
-  const avg30 = histScores.length ? Math.round(histScores.slice(-30).reduce((a,b)=>a+b,0)/Math.min(30,histScores.slice(-30).length)) : 0
+  const avg7 = histScores.length ? Math.round(histScores.slice(-7).reduce((a, b) => a + b, 0) / Math.min(7, histScores.slice(-7).length)) : 0
+  const avg30 = histScores.length ? Math.round(histScores.slice(-30).reduce((a, b) => a + b, 0) / Math.min(30, histScores.slice(-30).length)) : 0
   const todayQuote = DAILY_QUOTES[Math.floor(Date.now() / 86400000) % DAILY_QUOTES.length]
   const hr = new Date().getHours()
   const greeting = hr < 12 ? 'Guten Morgen.' : hr < 17 ? 'Guten Tag.' : 'Guten Abend.'
   const dateStr = new Date().toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
 
-  // Row helpers
-  function toHabitRow(h: Habit) { return { id: h.id, name: h.name, color: h.color, type: h.type, active_days: h.active_days, done: h.done, pct: h.pct, target: h.target, unit: h.unit, current_val: h.current_val } }
-  function toTaskRow(t: Task) { return { id: t.id, title: t.title, prio: t.prio, rollover: t.rollover, done: t.done, done_at: t.done_at || null, subs: t.subs, due: t.due } }
-  function toProjRow(p: Project) { return { id: p.id, name: p.name, color: p.color, deadline: p.deadline, status: p.status, items: p.items } }
-
-  // Habit actions
+  // ── Habit actions ───────────────────────────────────────
   async function toggleHabit(id: string, e?: React.MouseEvent | React.TouchEvent) {
     if (e && 'clientX' in e) emitSparkles(e.clientX, e.clientY)
     else emitSparkles()
-    setHabits(prev => prev.map(h => {
-      if (h.id !== id) return h
-      const done = !h.done, updated = { ...h, done, pct: done ? 100 : 0 }
-      dbUpsert('habits', [toHabitRow(updated)])
-      return updated
-    }))
+    setHabits(prev => {
+      const next = prev.map(h => {
+        if (h.id !== id) return h
+        const done = !h.done
+        const updated = { ...h, done, pct: done ? 100 : 0 }
+        dbUpsert('habits', [toHabitRow(updated)])
+        return updated
+      })
+      return next
+    })
   }
 
   async function updateMetric(id: string, val: number) {
-    setHabits(prev => prev.map(h => {
-      if (h.id !== id) return h
-      const pct = h.target ? Math.min(100, Math.round((val / h.target) * 100)) : 0
-      if (pct === 100) emitSparkles()
-      const updated = { ...h, current_val: val, pct }
-      dbUpsert('habits', [toHabitRow(updated)])
-      return updated
-    }))
+    setHabits(prev => {
+      const next = prev.map(h => {
+        if (h.id !== id) return h
+        const pct = h.target ? Math.min(100, Math.round((val / h.target) * 100)) : 0
+        if (pct === 100) emitSparkles()
+        const updated = { ...h, current_val: val, pct }
+        dbUpsert('habits', [toHabitRow(updated)])
+        return updated
+      })
+      return next
+    })
   }
 
+  // FIX #1: Draggable metric bar - touch + mouse, reliable
   function handleBarDrag(id: string, e: React.MouseEvent<HTMLDivElement> | React.TouchEvent<HTMLDivElement>) {
-    const bar = e.currentTarget, rect = bar.getBoundingClientRect()
+    e.preventDefault()
+    e.stopPropagation()
+    const bar = e.currentTarget
+    const rect = bar.getBoundingClientRect()
     const h = habits.find(x => x.id === id)
     if (!h?.target) return
-    const getX = (ev: MouseEvent | TouchEvent) => 'touches' in ev ? ev.touches[0].clientX : ev.clientX
+
     const update = (clientX: number) => {
       const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
-      updateMetric(id, Math.round(ratio * h.target! * 10) / 10)
+      const val = Math.round(ratio * h.target! * 10) / 10
+      updateMetric(id, val)
     }
-    update('touches' in e ? e.touches[0].clientX : e.clientX)
-    const onMove = (ev: MouseEvent | TouchEvent) => update(getX(ev))
-    const onUp = () => { window.removeEventListener('mousemove', onMove as any); window.removeEventListener('touchmove', onMove as any); window.removeEventListener('mouseup', onUp); window.removeEventListener('touchend', onUp) }
-    window.addEventListener('mousemove', onMove as any)
-    window.addEventListener('touchmove', onMove as any, { passive: true })
-    window.addEventListener('mouseup', onUp)
-    window.addEventListener('touchend', onUp)
+
+    const getClientX = (ev: MouseEvent | TouchEvent): number => {
+      if ('touches' in ev) return ev.touches[0]?.clientX ?? ev.changedTouches[0]?.clientX ?? 0
+      return (ev as MouseEvent).clientX
+    }
+
+    update(getClientX(e.nativeEvent as any))
+
+    const onMove = (ev: MouseEvent | TouchEvent) => { ev.preventDefault(); update(getClientX(ev)) }
+    const onEnd = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('touchmove', onMove)
+      window.removeEventListener('mouseup', onEnd)
+      window.removeEventListener('touchend', onEnd)
+    }
+    window.addEventListener('mousemove', onMove, { passive: false })
+    window.addEventListener('touchmove', onMove, { passive: false })
+    window.addEventListener('mouseup', onEnd)
+    window.addEventListener('touchend', onEnd)
   }
 
-  // Task actions
+  // ── Task actions ────────────────────────────────────────
   async function completeTask(id: string, e?: React.MouseEvent | React.TouchEvent) {
     if (e && 'clientX' in e) emitSparkles(e.clientX, e.clientY)
     else emitSparkles()
     setCompleting(prev => new Set(prev).add(id))
     setTimeout(() => {
-      setTasks(prev => prev.map(t => { if (t.id !== id) return t; const u = { ...t, done: true, done_at: new Date().toISOString() }; dbUpsert('tasks', [toTaskRow(u)]); return u }))
+      setTasks(prev => prev.map(t => {
+        if (t.id !== id) return t
+        const updated = { ...t, done: true, done_at: new Date().toISOString() }
+        dbUpsert('tasks', [toTaskRow(updated)])
+        return updated
+      }))
       setCompleting(prev => { const n = new Set(prev); n.delete(id); return n })
     }, 380)
   }
 
   function toggleSubTask(taskId: string, si: number) {
-    setTasks(prev => prev.map(t => { if (t.id !== taskId) return t; const subs = t.subs.map((s,i) => i===si ? {...s,d:!s.d} : s); const u = {...t,subs}; dbUpsert('tasks',[toTaskRow(u)]); return u }))
+    setTasks(prev => prev.map(t => {
+      if (t.id !== taskId) return t
+      const subs = t.subs.map((s, i) => i === si ? { ...s, d: !s.d } : s)
+      const updated = { ...t, subs }
+      dbUpsert('tasks', [toTaskRow(updated)])
+      return updated
+    }))
   }
 
   async function restoreTask(id: string) {
-    setTasks(prev => prev.map(t => { if (t.id !== id) return t; const u = {...t,done:false,done_at:undefined}; dbUpsert('tasks',[toTaskRow(u)]); return u }))
+    setTasks(prev => prev.map(t => {
+      if (t.id !== id) return t
+      const updated = { ...t, done: false, done_at: undefined }
+      dbUpsert('tasks', [toTaskRow(updated)])
+      return updated
+    }))
   }
 
   async function deleteTask(id: string) { setTasks(prev => prev.filter(t => t.id !== id)); await dbDelete('tasks', id) }
   async function deleteHabit(id: string) { setHabits(prev => prev.filter(h => h.id !== id)); await dbDelete('habits', id) }
   async function deleteProject(id: string) { setProjects(prev => prev.filter(p => p.id !== id)); await dbDelete('projects', id) }
 
+  // ── Project actions ─────────────────────────────────────
   function toggleProjItem(pid: string, ii: number) {
-    setProjects(prev => prev.map(p => { if (p.id !== pid) return p; const items = p.items.map((item,i) => i===ii ? {...item,d:!item.d} : item); const u = {...p,items}; dbUpsert('projects',[toProjRow(u)]); return u }))
+    setProjects(prev => prev.map(p => {
+      if (p.id !== pid) return p
+      const items = p.items.map((item, i) => i === ii ? { ...item, d: !item.d } : item)
+      const u = { ...p, items }; dbUpsert('projects', [toProjRow(u)]); return u
+    }))
   }
   function toggleProjSub(pid: string, ii: number, si: number) {
-    setProjects(prev => prev.map(p => { if (p.id !== pid) return p; const items = p.items.map((item,i) => i!==ii ? item : {...item,subs:item.subs.map((s,j)=>j===si?{...s,d:!s.d}:s)}); const u={...p,items}; dbUpsert('projects',[toProjRow(u)]); return u }))
+    setProjects(prev => prev.map(p => {
+      if (p.id !== pid) return p
+      const items = p.items.map((item, i) => i !== ii ? item : { ...item, subs: item.subs.map((s, j) => j === si ? { ...s, d: !s.d } : s) })
+      const u = { ...p, items }; dbUpsert('projects', [toProjRow(u)]); return u
+    }))
   }
   function updateProjStatus(pid: string, status: ProjectStatus) {
-    setProjects(prev => prev.map(p => { if (p.id !== pid) return p; const u={...p,status}; dbUpsert('projects',[toProjRow(u)]); return u }))
+    setProjects(prev => prev.map(p => { if (p.id !== pid) return p; const u = { ...p, status }; dbUpsert('projects', [toProjRow(u)]); return u }))
   }
 
   async function saveAnalysis() {
@@ -275,20 +368,42 @@ export default function App() {
     await saveDailySummary(todayStr(), life, hScore, tScore, habits, tasks.filter(t => t.done))
     const hist = await loadHistory()
     setHistory(hist)
-    let s = 0; for (let i = hist.length-1; i>=0; i--) { if (hist[i].life_score >= 50) s++; else break }
+    let s = 0; for (let i = hist.length - 1; i >= 0; i--) { if (hist[i].life_score >= 50) s++; else break }
     setStreak(s)
     setAnalysisOpen(false)
   }
 
-  const activeTasks = tasks.filter(t => !t.done).sort((a,b) => {
-    const aO = a.rollover||(!!a.due&&(dueDiff(a.due)??0)<0), bO = b.rollover||(!!b.due&&(dueDiff(b.due)??0)<0)
-    if (aO&&!bO) return -1; if (!aO&&bO) return 1
-    if (taskSort==='prio') return PW[b.prio]-PW[a.prio]
-    if (taskSort==='due') { if (!a.due&&!b.due) return 0; if (!a.due) return 1; if (!b.due) return -1; return new Date(a.due).getTime()-new Date(b.due).getTime() }
+  // ── Sorted tasks ────────────────────────────────────────
+  const activeTasks = tasks.filter(t => !t.done).sort((a, b) => {
+    const aO = a.rollover || (!!a.due && (dueDiff(a.due) ?? 0) < 0)
+    const bO = b.rollover || (!!b.due && (dueDiff(b.due) ?? 0) < 0)
+    if (aO && !bO) return -1; if (!aO && bO) return 1
+    if (taskSort === 'prio') return PW[b.prio] - PW[a.prio]
+    if (taskSort === 'due') { if (!a.due && !b.due) return 0; if (!a.due) return 1; if (!b.due) return -1; return new Date(a.due).getTime() - new Date(b.due).getTime() }
     return a.title.localeCompare(b.title)
   })
   const doneTasks = tasks.filter(t => t.done)
   const todayHabits = habits.filter(h => h.active_days.includes(TODAY_DOW))
+
+  // ── Save handlers for modals ────────────────────────────
+  async function handleSaveHabit(h: Habit) {
+    if (modal?.editId) setHabits(p => p.map(x => x.id === modal.editId ? h : x))
+    else setHabits(p => [...p, h])
+    await dbUpsert('habits', [toHabitRow(h)])
+    setModal(null)
+  }
+  async function handleSaveTask(t: Task) {
+    if (modal?.editId) setTasks(p => p.map(x => x.id === modal.editId ? t : x))
+    else setTasks(p => [...p, t])
+    await dbUpsert('tasks', [toTaskRow(t)])
+    setModal(null)
+  }
+  async function handleSaveProject(p: Project) {
+    if (modal?.editId) setProjects(prev => prev.map(x => x.id === modal.editId ? p : x))
+    else setProjects(prev => [...prev, p])
+    await dbUpsert('projects', [toProjRow(p)])
+    setModal(null)
+  }
 
   if (loading) return (
     <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#090c12', flexDirection: 'column', gap: 16 }}>
@@ -298,7 +413,7 @@ export default function App() {
     </div>
   )
 
-  // Shared content blocks
+  // ── Shared content blocks ───────────────────────────────
   const habitsBlock = (
     <div>
       <SectionHeader title="Habits" score={hScore} scoreColor="#00e87a" animKey={animKey} />
@@ -321,14 +436,15 @@ export default function App() {
       {activeTasks.length === 0 ? <Empty>Alle Tasks erledigt 🎉</Empty> : activeTasks.map((t, idx) => (
         <TaskCard key={t.id} task={t} idx={idx} isCompleting={completing.has(t.id)} showSub={showSubs[t.id]}
           onComplete={(e) => completeTask(t.id, e)}
-          onToggleSub={() => setShowSubs(p => ({...p,[t.id]:!showSubs[t.id]}))}
+          onToggleSub={() => setShowSubs(p => ({ ...p, [t.id]: !showSubs[t.id] }))}
           onToggleSubItem={(si) => toggleSubTask(t.id, si)}
           onEdit={() => setModal({ type: 'task', editId: t.id })} />
       ))}
       {doneTasks.length > 0 && (
         <details style={{ marginTop: 12 }}>
           <summary style={{ fontSize: 11, color: '#3d4f68', cursor: 'pointer', padding: '8px 0', userSelect: 'none', display: 'flex', alignItems: 'center', gap: 6, listStyle: 'none' }}>
-            <span>▶</span> Erledigt ({doneTasks.length}) <span style={{ marginLeft: 'auto', fontSize: 10, color: '#1e2840' }}>auto-delete 3 Tage</span>
+            <span>▶</span> Erledigt ({doneTasks.length})
+            <span style={{ marginLeft: 'auto', fontSize: 10, color: '#1e2840' }}>auto-delete 3 Tage</span>
           </summary>
           <div style={{ marginTop: 8, animation: 'fadeIn .3s ease' }}>
             {doneTasks.map(t => (
@@ -364,19 +480,30 @@ export default function App() {
     </div>
   )
 
-  // ── DESKTOP LAYOUT ────────────────────────────────────────────
+  const modalsEl = (
+    <Modals modal={modal} setModal={setModal}
+      analysisOpen={analysisOpen} setAnalysisOpen={setAnalysisOpen}
+      manageOpen={manageOpen} setManageOpen={setManageOpen}
+      habits={habits} tasks={tasks} projects={projects}
+      hScore={hScore} tScore={tScore} life={life} history={history} streak={streak}
+      onSaveHabit={handleSaveHabit} onSaveTask={handleSaveTask} onSaveProject={handleSaveProject}
+      onEditHabit={h => { setManageOpen(false); setModal({ type: 'habit', editId: h.id }) }}
+      onEditTask={t => { setManageOpen(false); setModal({ type: 'task', editId: t.id }) }}
+      onDeleteHabit={deleteHabit} onDeleteTask={deleteTask}
+      onSaveAnalysis={saveAnalysis} />
+  )
+
+  // ── DESKTOP ───────────────────────────────────────────────
   if (!isMobile) {
     return (
       <div style={{ minHeight: '100vh', background: '#090c12', position: 'relative', overflowX: 'hidden' }}>
         <Blobs />
         <div style={{ maxWidth: 1140, margin: '0 auto', padding: '24px 20px 80px', position: 'relative', zIndex: 1 }}>
-
-          {/* Top bar */}
           <div style={{ position: 'relative', overflow: 'hidden', borderRadius: 18, border: '1px solid rgba(61,127,255,.25)', background: 'linear-gradient(135deg,rgba(61,127,255,.15),rgba(155,109,255,.1))', padding: '14px 24px', marginBottom: 20, display: 'flex', alignItems: 'center', justifyContent: 'space-between', animation: 'slideInUp .5s ease' }}>
             <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(90deg,transparent,rgba(61,127,255,.05),transparent)', animation: 'shimmer 3s infinite' }} />
             <div style={{ position: 'relative', fontSize: 13, color: '#7a88a8' }}>
               {streak > 0 && <span style={{ color: '#00e87a', fontWeight: 700, marginRight: 12 }}>🔥 {streak}d Streak</span>}
-              7d Avg: <b style={{ color: '#dce4f5' }}>{avg7}%</b> · vs Monat: <b style={{ color: avg7-avg30>=0?'#00e87a':'#ff4d6a' }}>{avg7-avg30>=0?'+':''}{avg7-avg30}%</b>
+              7d: <b style={{ color: '#dce4f5' }}>{avg7}%</b> · vs Monat: <b style={{ color: avg7 - avg30 >= 0 ? '#00e87a' : '#ff4d6a' }}>{avg7 - avg30 >= 0 ? '+' : ''}{avg7 - avg30}%</b>
             </div>
             <div style={{ display: 'flex', gap: 8, position: 'relative' }}>
               <Btn onClick={() => setManageOpen(true)} ghost small>📋 Verwalten</Btn>
@@ -384,8 +511,6 @@ export default function App() {
               <Btn onClick={() => setModal({ type: 'task' })} small>+ Hinzufügen</Btn>
             </div>
           </div>
-
-          {/* Header */}
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24, paddingBottom: 20, borderBottom: '1px solid #1e2840', animation: 'fadeIn .5s ease .1s both' }}>
             <div>
               <h1 style={{ fontSize: 28, fontWeight: 800, letterSpacing: -1, background: 'linear-gradient(135deg,#dce4f5,#7a88a8)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>{greeting}</h1>
@@ -394,125 +519,117 @@ export default function App() {
             </div>
             <DualRing hScore={hScore} tScore={tScore} life={life} onClick={() => setAnalysisOpen(true)} animKey={animKey} />
           </div>
-
-          {/* 2-col grid */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
             <Card>{habitsBlock}</Card>
             <Card>{tasksBlock}</Card>
           </div>
-
           <Card style={{ marginBottom: 16 }}>{projectsBlock}</Card>
           <Analytics history={history} />
         </div>
-
-        <Modals modal={modal} setModal={setModal} analysisOpen={analysisOpen} setAnalysisOpen={setAnalysisOpen}
-          manageOpen={manageOpen} setManageOpen={setManageOpen}
-          habits={habits} tasks={tasks} projects={projects}
-          hScore={hScore} tScore={tScore} life={life} history={history} streak={streak}
-          onSaveHabit={async h => { if (modal?.editId) setHabits(p=>p.map(x=>x.id===modal.editId?h:x)); else setHabits(p=>[...p,h]); await dbUpsert('habits',[toHabitRow(h)]); setModal(null) }}
-          onSaveTask={async t => { if (modal?.editId) setTasks(p=>p.map(x=>x.id===modal.editId?t:x)); else setTasks(p=>[...p,t]); await dbUpsert('tasks',[toTaskRow(t)]); setModal(null) }}
-          onSaveProject={async p => { if (modal?.editId) setProjects(prev=>prev.map(x=>x.id===modal.editId?p:x)); else setProjects(prev=>[...prev,p]); await dbUpsert('projects',[toProjRow(p)]); setModal(null) }}
-          onEditHabit={h => { setManageOpen(false); setModal({ type: 'habit', editId: h.id }) }}
-          onEditTask={t => { setManageOpen(false); setModal({ type: 'task', editId: t.id }) }}
-          onDeleteHabit={deleteHabit} onDeleteTask={deleteTask}
-          onSaveAnalysis={saveAnalysis} />
+        {modalsEl}
       </div>
     )
   }
 
-  // ── MOBILE LAYOUT ─────────────────────────────────────────────
+  // ── MOBILE ─────────────────────────────────────────────────
   return (
     <div style={{ minHeight: '100vh', background: '#090c12', position: 'relative', paddingBottom: `calc(72px + env(safe-area-inset-bottom,0px))` }}>
       <Blobs />
 
-      {/* Mobile header */}
-      <div style={{ position: 'sticky', top: 0, zIndex: 50, background: 'rgba(9,12,18,.92)', backdropFilter: 'blur(16px)', borderBottom: '1px solid #1e2840', padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <div>
-          <div style={{ fontSize: 16, fontWeight: 800, letterSpacing: -.5, background: 'linear-gradient(135deg,#dce4f5,#7a88a8)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>Productivity OS</div>
-          <div style={{ fontSize: 10, color: '#3d4f68', fontFamily: 'var(--mono)', marginTop: 1 }}>{new Date().toLocaleDateString('de-DE',{weekday:'short',day:'numeric',month:'short'})}</div>
+      {/* Mobile sticky header */}
+      <div style={{ position: 'sticky', top: 0, zIndex: 50, background: 'rgba(9,12,18,.95)', backdropFilter: 'blur(16px)', borderBottom: '1px solid #1e2840', padding: '12px 16px' }}>
+        {/* Row 1: greeting + date | quote */}
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 10 }}>
+          <div style={{ flexShrink: 0 }}>
+            <div style={{ fontSize: 15, fontWeight: 800, letterSpacing: -.5, background: 'linear-gradient(135deg,#dce4f5,#7a88a8)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>{greeting}</div>
+            <div style={{ fontSize: 10, color: '#3d4f68', fontFamily: 'var(--mono)', marginTop: 1 }}>{new Date().toLocaleDateString('de-DE', { weekday: 'short', day: 'numeric', month: 'short' })}</div>
+          </div>
+          <div style={{ fontSize: 11, color: '#7a88a8', fontStyle: 'italic', textAlign: 'right', flex: 1, lineHeight: 1.4 }}>"{todayQuote}"</div>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          {streak > 0 && <div style={{ fontSize: 11, color: '#00e87a', fontWeight: 700, background: 'rgba(0,232,122,.1)', padding: '3px 8px', borderRadius: 20, border: '1px solid rgba(0,232,122,.2)' }}>🔥 {streak}d</div>}
-          <MobileRing life={life} hScore={hScore} tScore={tScore} onClick={() => setAnalysisOpen(true)} />
+
+        {/* Row 2: Ring | + button */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <MobileRing life={life} hScore={hScore} tScore={tScore} onClick={() => setAnalysisOpen(true)} />
+            {streak > 0 && <div style={{ fontSize: 11, color: '#00e87a', fontWeight: 700, background: 'rgba(0,232,122,.1)', padding: '3px 8px', borderRadius: 20, border: '1px solid rgba(0,232,122,.2)' }}>🔥 {streak}d</div>}
+          </div>
+          <button onClick={() => setModal({ type: mobileTab === 'habits' ? 'habit' : mobileTab === 'projects' ? 'project' : 'task' })}
+            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '9px 18px', background: 'linear-gradient(135deg,#2563d4,#7c4fd4)', border: 'none', borderRadius: 10, color: '#fff', fontSize: 14, fontWeight: 700, cursor: 'pointer' }}>
+            + Hinzufügen
+          </button>
         </div>
       </div>
 
       {/* Mobile content */}
       <div style={{ padding: '16px 16px 8px', position: 'relative', zIndex: 1 }}>
 
-        {/* HOME TAB */}
+        {/* HOME */}
         {mobileTab === 'home' && (
           <div style={{ animation: 'fadeIn .3s ease' }}>
-            {/* Quote */}
-            <div style={{ fontSize: 13, color: '#7a88a8', fontStyle: 'italic', marginBottom: 16, padding: '12px 16px', background: '#0f1420', borderRadius: 12, border: '1px solid #1e2840', lineHeight: 1.5 }}>
-              "{todayQuote}"
-            </div>
-
             {/* Score cards */}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 16 }}>
               {[{ label: 'Life', val: life, color: life >= 70 ? '#00e87a' : life >= 40 ? '#ffb830' : '#ff4d6a' }, { label: 'Habits', val: hScore, color: '#00e87a' }, { label: 'Tasks', val: tScore, color: '#3d7fff' }].map(s => (
-                <div key={s.label} style={{ background: '#0f1420', border: '1px solid #1e2840', borderRadius: 14, padding: '14px 10px', textAlign: 'center', animation: 'popIn .4s ease' }}>
-                  <div style={{ fontFamily: 'var(--mono)', fontSize: 24, fontWeight: 500, color: s.color, animation: 'numberTick .3s ease' }} key={s.val + animKey}>{s.val}%</div>
+                <div key={s.label} style={{ background: '#0f1420', border: '1px solid #1e2840', borderRadius: 14, padding: '12px 10px', textAlign: 'center' }}>
+                  <div style={{ fontFamily: 'var(--mono)', fontSize: 22, fontWeight: 500, color: s.color }} key={s.val + animKey}>{s.val}%</div>
                   <div style={{ fontSize: 10, color: '#3d4f68', textTransform: 'uppercase', letterSpacing: 1, marginTop: 3 }}>{s.label}</div>
                   <div style={{ height: 3, background: '#1c2235', borderRadius: 2, marginTop: 8, overflow: 'hidden' }}>
-                    <div style={{ height: '100%', background: s.color, width: `${s.val}%`, borderRadius: 2, transition: 'width 1s cubic-bezier(.34,1.2,.64,1)' }} />
+                    <div style={{ height: '100%', background: s.color, width: `${s.val}%`, borderRadius: 2, transition: 'width 1s ease' }} />
                   </div>
                 </div>
               ))}
             </div>
 
-            {/* Quick habits preview */}
-            <div style={{ background: '#0f1420', border: '1px solid #1e2840', borderRadius: 16, padding: 16, marginBottom: 12 }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+            {/* Habits preview */}
+            <div style={{ background: '#0f1420', border: '1px solid #1e2840', borderRadius: 16, padding: 14, marginBottom: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
                 <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1.5, color: '#7a88a8' }}>Habits heute</div>
                 <button onClick={() => setMobileTab('habits')} style={{ fontSize: 11, color: '#3d7fff', background: 'none', border: 'none', cursor: 'pointer' }}>Alle →</button>
               </div>
-              {todayHabits.slice(0,3).map(h => {
-                const c = COLORS[h.color], pct = h.type==='metric'&&h.target ? Math.min(100,Math.round(((h.current_val||0)/h.target)*100)) : h.pct
+              {todayHabits.slice(0, 3).map(h => {
+                const c = COLORS[h.color], pct = h.type === 'metric' && h.target ? Math.min(100, Math.round(((h.current_val || 0) / h.target) * 100)) : h.pct
                 return (
                   <div key={h.id} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
-                    <div style={{ width: 7, height: 7, borderRadius: '50%', background: c, boxShadow: `0 0 6px ${c}`, flexShrink: 0 }} />
+                    <div style={{ width: 7, height: 7, borderRadius: '50%', background: c, flexShrink: 0 }} />
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>{h.name}</div>
                       <div style={{ height: 4, background: '#1c2235', borderRadius: 2, overflow: 'hidden' }}>
                         <div style={{ height: '100%', background: c, width: `${pct}%`, borderRadius: 2, transition: 'width .5s' }} />
                       </div>
                     </div>
-                    <span style={{ fontSize: 11, fontFamily: 'var(--mono)', color: pct>=100?'#00e87a':'#7a88a8', minWidth: 32, textAlign: 'right' }}>{pct}%</span>
+                    <span style={{ fontSize: 11, fontFamily: 'var(--mono)', color: pct >= 100 ? '#00e87a' : '#7a88a8', minWidth: 32, textAlign: 'right' }}>{pct}%</span>
                     {h.type === 'binary' && (
-                      <div onClick={(e) => toggleHabit(h.id, e)} style={{ width: 28, height: 28, borderRadius: 7, border: `2px solid ${h.done?'#00e87a':'#3d4f70'}`, background: h.done?'#00e87a':'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, cursor: 'pointer', transition: 'all .2s', boxShadow: h.done?'0 0 12px rgba(0,232,122,.4)':'none' }}>
-                        {h.done && <svg width="13" height="13" viewBox="0 0 12 12" fill="none"><polyline points="2,6 5,9 10,3" stroke="white" strokeWidth="2.2" strokeLinecap="round"/></svg>}
+                      <div onClick={(e) => toggleHabit(h.id, e)} style={{ width: 28, height: 28, borderRadius: 7, border: `2px solid ${h.done ? '#00e87a' : '#3d4f70'}`, background: h.done ? '#00e87a' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, cursor: 'pointer', transition: 'all .2s' }}>
+                        {h.done && <svg width="13" height="13" viewBox="0 0 12 12" fill="none"><polyline points="2,6 5,9 10,3" stroke="white" strokeWidth="2.2" strokeLinecap="round" /></svg>}
                       </div>
                     )}
                   </div>
                 )
               })}
-              {todayHabits.length > 3 && <div style={{ fontSize: 11, color: '#3d4f68', textAlign: 'center', marginTop: 4 }}>+{todayHabits.length-3} weitere</div>}
+              {todayHabits.length > 3 && <div style={{ fontSize: 11, color: '#3d4f68', textAlign: 'center', marginTop: 4 }}>+{todayHabits.length - 3} weitere</div>}
             </div>
 
-            {/* Quick tasks preview */}
-            <div style={{ background: '#0f1420', border: '1px solid #1e2840', borderRadius: 16, padding: 16, marginBottom: 12 }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+            {/* Tasks preview */}
+            <div style={{ background: '#0f1420', border: '1px solid #1e2840', borderRadius: 16, padding: 14, marginBottom: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
                 <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1.5, color: '#7a88a8' }}>Tasks</div>
                 <button onClick={() => setMobileTab('tasks')} style={{ fontSize: 11, color: '#3d7fff', background: 'none', border: 'none', cursor: 'pointer' }}>Alle →</button>
               </div>
-              {activeTasks.slice(0,4).map(t => {
-                const isOver = t.rollover||(!!t.due&&(dueDiff(t.due)??0)<0)
-                const colors: Record<Priority,string> = { high: '#ff4d6a', med: '#ffb830', low: '#3d4f68' }
+              {activeTasks.slice(0, 4).map(t => {
+                const isOver = t.rollover || (!!t.due && (dueDiff(t.due) ?? 0) < 0)
+                const colors: Record<Priority, string> = { high: '#ff4d6a', med: '#ffb830', low: '#3d4f68' }
                 return (
                   <div key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 9 }}>
-                    <div onClick={(e) => completeTask(t.id, e)} style={{ width: 22, height: 22, borderRadius: 6, border: `1.5px solid ${isOver?'rgba(255,77,106,.4)':'#3d4f70'}`, background: 'transparent', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                      <svg width="10" height="10" viewBox="0 0 12 12" fill="none"><polyline points="2,6 5,9 10,3" stroke="rgba(255,255,255,.2)" strokeWidth="2" strokeLinecap="round"/></svg>
+                    <div onClick={(e) => completeTask(t.id, e)} style={{ width: 22, height: 22, borderRadius: 6, border: `1.5px solid ${isOver ? 'rgba(255,77,106,.5)' : '#3d4f70'}`, background: 'transparent', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                      <svg width="10" height="10" viewBox="0 0 12 12" fill="none"><polyline points="2,6 5,9 10,3" stroke="rgba(255,255,255,.15)" strokeWidth="2" strokeLinecap="round" /></svg>
                     </div>
-                    <span style={{ fontSize: 12, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: isOver?'#ff4d6a':'#dce4f5' }}>{t.title}</span>
+                    <span style={{ fontSize: 12, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: isOver ? '#ff4d6a' : '#dce4f5' }}>{t.title}</span>
                     <div style={{ width: 7, height: 7, borderRadius: '50%', background: colors[t.prio], flexShrink: 0 }} />
                   </div>
                 )
               })}
-              {activeTasks.length > 4 && <div style={{ fontSize: 11, color: '#3d4f68', textAlign: 'center', marginTop: 4 }}>+{activeTasks.length-4} weitere</div>}
+              {activeTasks.length > 4 && <div style={{ fontSize: 11, color: '#3d4f68', textAlign: 'center', marginTop: 4 }}>+{activeTasks.length - 4} weitere</div>}
             </div>
 
-            {/* Bottom actions */}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
               <button onClick={() => setManageOpen(true)} style={{ padding: '12px', background: '#0f1420', border: '1px solid #1e2840', borderRadius: 12, color: '#7a88a8', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>📋 Verwalten</button>
               <button onClick={() => setAnalysisOpen(true)} style={{ padding: '12px', background: 'rgba(61,127,255,.08)', border: '1px solid rgba(61,127,255,.2)', borderRadius: 12, color: '#3d7fff', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>📊 Analyse</button>
@@ -520,45 +637,35 @@ export default function App() {
           </div>
         )}
 
-        {/* HABITS TAB */}
+        {/* HABITS TAB – stacked single column */}
         {mobileTab === 'habits' && (
           <div style={{ animation: 'tabSlide .25s ease' }}>
             <Card>{habitsBlock}</Card>
           </div>
         )}
 
-        {/* TASKS TAB */}
+        {/* TASKS TAB – stacked single column */}
         {mobileTab === 'tasks' && (
           <div style={{ animation: 'tabSlide .25s ease' }}>
             <Card>{tasksBlock}</Card>
           </div>
         )}
 
-        {/* PROJECTS TAB */}
         {mobileTab === 'projects' && (
           <div style={{ animation: 'tabSlide .25s ease' }}>
             <Card>{projectsBlock}</Card>
           </div>
         )}
 
-        {/* ANALYTICS TAB */}
         {mobileTab === 'analytics' && (
           <div style={{ animation: 'tabSlide .25s ease' }}>
-            <Analytics history={history} compact={true} />
+            <Analytics history={history} compact />
           </div>
         )}
       </div>
 
-      {/* Mobile FAB */}
-      <button onClick={() => setModal({ type: mobileTab==='habits'?'habit':mobileTab==='projects'?'project':'task' })}
-        style={{ position: 'fixed', bottom: `calc(80px + env(safe-area-inset-bottom,0px))`, right: 20, width: 56, height: 56, borderRadius: '50%', background: 'linear-gradient(135deg,#2563d4,#7c4fd4)', border: 'none', color: 'white', fontSize: 28, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 6px 24px rgba(37,99,212,.5)', zIndex: 40, transition: 'transform .15s', animation: 'bounceIn .5s cubic-bezier(.34,1.56,.64,1)' }}
-        onTouchStart={e => (e.currentTarget.style.transform = 'scale(0.92)')}
-        onTouchEnd={e => (e.currentTarget.style.transform = 'scale(1)')}>
-        +
-      </button>
-
       {/* Bottom nav */}
-      <nav style={{ position: 'fixed', bottom: 0, left: 0, right: 0, height: `calc(64px + env(safe-area-inset-bottom,0px))`, background: 'rgba(9,12,18,.95)', backdropFilter: 'blur(20px)', borderTop: '1px solid #1e2840', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-around', paddingTop: 8, zIndex: 50 }}>
+      <nav style={{ position: 'fixed', bottom: 0, left: 0, right: 0, height: `calc(64px + env(safe-area-inset-bottom,0px))`, background: 'rgba(9,12,18,.97)', backdropFilter: 'blur(20px)', borderTop: '1px solid #1e2840', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-around', paddingTop: 8, zIndex: 50 }}>
         {([
           { key: 'home', icon: '⊞', label: 'Home' },
           { key: 'habits', icon: '◎', label: 'Habits' },
@@ -568,33 +675,22 @@ export default function App() {
         ] as { key: MobileTab; icon: string; label: string }[]).map(item => {
           const active = mobileTab === item.key
           return (
-            <button key={item.key} onClick={() => setMobileTab(item.key)}
-              style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, background: 'none', border: 'none', cursor: 'pointer', padding: '0 8px', flex: 1, transition: 'all .2s', animation: active ? 'navPop .3s ease' : 'none' }}>
-              <div style={{ width: 36, height: 28, borderRadius: 10, background: active ? 'rgba(61,127,255,.2)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all .25s', border: active ? '1px solid rgba(61,127,255,.3)' : '1px solid transparent' }}>
+            <button key={item.key} onClick={() => setMobileTab(item.key)} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, background: 'none', border: 'none', cursor: 'pointer', padding: '0 8px', flex: 1 }}>
+              <div style={{ width: 36, height: 28, borderRadius: 10, background: active ? 'rgba(61,127,255,.2)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all .2s', border: active ? '1px solid rgba(61,127,255,.3)' : '1px solid transparent' }}>
                 <span style={{ fontSize: 16, color: active ? '#3d7fff' : '#3d4f68', transition: 'color .2s' }}>{item.icon}</span>
               </div>
-              <span style={{ fontSize: 10, color: active ? '#3d7fff' : '#3d4f68', fontWeight: active ? 700 : 400, transition: 'color .2s, font-weight .2s' }}>{item.label}</span>
+              <span style={{ fontSize: 10, color: active ? '#3d7fff' : '#3d4f68', fontWeight: active ? 700 : 400, transition: 'color .2s' }}>{item.label}</span>
             </button>
           )
         })}
       </nav>
 
-      <Modals modal={modal} setModal={setModal} analysisOpen={analysisOpen} setAnalysisOpen={setAnalysisOpen}
-        manageOpen={manageOpen} setManageOpen={setManageOpen}
-        habits={habits} tasks={tasks} projects={projects}
-        hScore={hScore} tScore={tScore} life={life} history={history} streak={streak}
-        onSaveHabit={async h => { if (modal?.editId) setHabits(p=>p.map(x=>x.id===modal.editId?h:x)); else setHabits(p=>[...p,h]); await dbUpsert('habits',[toHabitRow(h)]); setModal(null) }}
-        onSaveTask={async t => { if (modal?.editId) setTasks(p=>p.map(x=>x.id===modal.editId?t:x)); else setTasks(p=>[...p,t]); await dbUpsert('tasks',[toTaskRow(t)]); setModal(null) }}
-        onSaveProject={async p => { if (modal?.editId) setProjects(prev=>prev.map(x=>x.id===modal.editId?p:x)); else setProjects(prev=>[...prev,p]); await dbUpsert('projects',[toProjRow(p)]); setModal(null) }}
-        onEditHabit={h => { setManageOpen(false); setModal({ type: 'habit', editId: h.id }) }}
-        onEditTask={t => { setManageOpen(false); setModal({ type: 'task', editId: t.id }) }}
-        onDeleteHabit={deleteHabit} onDeleteTask={deleteTask}
-        onSaveAnalysis={saveAnalysis} />
+      {modalsEl}
     </div>
   )
 }
 
-// ── Shared UI components ─────────────────────────────────
+// ── Shared components ─────────────────────────────────────
 
 function Blobs() {
   return (
@@ -656,15 +752,15 @@ function DualRing({ hScore, tScore, life, onClick, animKey }: any) {
 
 function MobileRing({ life, hScore, tScore, onClick }: any) {
   return (
-    <div onClick={onClick} style={{ position: 'relative', width: 44, height: 44, cursor: 'pointer' }}>
+    <div onClick={onClick} style={{ position: 'relative', width: 44, height: 44, cursor: 'pointer', flexShrink: 0 }}>
       <svg width="44" height="44" viewBox="0 0 44 44" style={{ position: 'absolute', inset: 0 }}>
         <circle cx="22" cy="22" r="18" fill="none" stroke="rgba(0,232,122,.08)" strokeWidth="4" />
         <circle cx="22" cy="22" r="18" fill="none" stroke="#00e87a" strokeWidth="4" strokeLinecap="round"
-          strokeDasharray="113" strokeDashoffset={113-(hScore/100)*113} transform="rotate(-90 22 22)"
+          strokeDasharray="113" strokeDashoffset={113 - (hScore / 100) * 113} transform="rotate(-90 22 22)"
           style={{ transition: 'stroke-dashoffset 1s ease' }} />
         <circle cx="22" cy="22" r="11" fill="none" stroke="rgba(61,127,255,.08)" strokeWidth="3.5" />
         <circle cx="22" cy="22" r="11" fill="none" stroke="#3d7fff" strokeWidth="3.5" strokeLinecap="round"
-          strokeDasharray="69" strokeDashoffset={69-(tScore/100)*69} transform="rotate(-90 22 22)"
+          strokeDasharray="69" strokeDashoffset={69 - (tScore / 100) * 69} transform="rotate(-90 22 22)"
           style={{ transition: 'stroke-dashoffset 1s ease .1s' }} />
       </svg>
       <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', fontFamily: 'var(--mono)', fontSize: 11, fontWeight: 500, color: '#dce4f5' }}>{life}</div>
@@ -674,15 +770,15 @@ function MobileRing({ life, hScore, tScore, onClick }: any) {
 
 function HabitCard({ habit: h, idx, onToggle, onMetric, onBarDrag, onEdit }: any) {
   const c = COLORS[h.color as BrandColor] || '#00e87a'
-  const pct = h.type==='metric'&&h.target ? Math.min(100,Math.round(((h.current_val||0)/h.target)*100)) : h.pct
-  const pctColor = pct>=100?'#00e87a':pct>=50?'#ffb830':'#7a88a8'
-  const daysLabel = h.active_days.length===7?'täglich':h.active_days.map((d:number)=>DSHORT[d]).join(', ')
+  const pct = h.type === 'metric' && h.target ? Math.min(100, Math.round(((h.current_val || 0) / h.target) * 100)) : h.pct
+  const pctColor = pct >= 100 ? '#00e87a' : pct >= 50 ? '#ffb830' : '#7a88a8'
+  const daysLabel = h.active_days.length === 7 ? 'täglich' : h.active_days.map((d: number) => DSHORT[d]).join(', ')
 
   return (
-    <div style={{ background: h.done?'rgba(0,232,122,.04)':'#141928', border: `1px solid ${h.done?'rgba(0,232,122,.2)':'#1e2840'}`, borderRadius: 12, padding: '12px 14px', marginBottom: 8, transition: 'all .3s', animation: `slideInLeft .4s ease ${idx*.05}s both` }}>
+    <div style={{ background: h.done ? 'rgba(0,232,122,.04)' : '#141928', border: `1px solid ${h.done ? 'rgba(0,232,122,.2)' : '#1e2840'}`, borderRadius: 12, padding: '12px 14px', marginBottom: 8, transition: 'all .3s', animation: `slideInLeft .4s ease ${idx * .05}s both` }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 }}>
-          <div style={{ width: 8, height: 8, borderRadius: '50%', background: c, boxShadow: `0 0 ${h.done?'10px':'5px'} ${c}`, flexShrink: 0, transition: 'box-shadow .3s' }} />
+          <div style={{ width: 8, height: 8, borderRadius: '50%', background: c, boxShadow: `0 0 ${h.done ? '10px' : '5px'} ${c}`, flexShrink: 0, transition: 'box-shadow .3s' }} />
           <div style={{ minWidth: 0 }}>
             <div style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{h.name}</div>
             <div style={{ fontSize: 9, color: '#3d4f68', fontFamily: 'var(--mono)' }}>{daysLabel}</div>
@@ -691,25 +787,32 @@ function HabitCard({ habit: h, idx, onToggle, onMetric, onBarDrag, onEdit }: any
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
           <span style={{ fontFamily: 'var(--mono)', fontSize: 12, color: pctColor, transition: 'color .3s' }} key={pct}>{pct}%</span>
           <EditBtn onClick={onEdit} />
-          {h.type==='binary' && (
-            <div onTouchEnd={onToggle} onClick={onToggle}
-              style={{ width: 28, height: 28, borderRadius: 7, border: `2px solid ${h.done?'#00e87a':'#3d4f70'}`, background: h.done?'#00e87a':'transparent', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, boxShadow: h.done?'0 0 14px rgba(0,232,122,.5)':'none', transition: 'all .25s cubic-bezier(.34,1.56,.64,1)', animation: h.done?'checkBounce .4s ease':'none' }}>
-              {h.done && <svg width="13" height="13" viewBox="0 0 12 12" fill="none"><polyline points="2,6 5,9 10,3" stroke="white" strokeWidth="2.2" strokeLinecap="round"/></svg>}
+          {h.type === 'binary' && (
+            <div onClick={onToggle} onTouchEnd={onToggle}
+              style={{ width: 28, height: 28, borderRadius: 7, border: `2px solid ${h.done ? '#00e87a' : '#3d4f70'}`, background: h.done ? '#00e87a' : 'transparent', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, boxShadow: h.done ? '0 0 14px rgba(0,232,122,.5)' : 'none', transition: 'all .25s cubic-bezier(.34,1.56,.64,1)', animation: h.done ? 'checkBounce .4s ease' : 'none' }}>
+              {h.done && <svg width="13" height="13" viewBox="0 0 12 12" fill="none"><polyline points="2,6 5,9 10,3" stroke="white" strokeWidth="2.2" strokeLinecap="round" /></svg>}
             </div>
           )}
         </div>
       </div>
-      <div onMouseDown={onBarDrag} onTouchStart={onBarDrag}
-        onClick={h.type==='binary'?onToggle:undefined}
-        style={{ height: 6, background: '#232c42', borderRadius: 3, marginTop: 10, overflow: 'hidden', cursor: h.type==='metric'?'ew-resize':'pointer', position: 'relative', userSelect: 'none', touchAction: 'none' }}>
-        <div style={{ height: '100%', borderRadius: 3, background: `linear-gradient(90deg,${c}99,${c})`, width: `${pct}%`, transition: h.type==='binary'?'width .5s cubic-bezier(.34,1.2,.64,1)':'none', position: 'relative' }}>
-          {h.type==='metric'&&pct>0 && <div style={{ position: 'absolute', right: -1, top: '50%', transform: 'translateY(-50%)', width: 10, height: 10, borderRadius: '50%', background: c, boxShadow: `0 0 6px ${c}`, border: '1.5px solid #141928' }} />}
+
+      {/* Draggable progress bar – bigger touch target */}
+      <div
+        onMouseDown={h.type === 'metric' ? onBarDrag : undefined}
+        onTouchStart={h.type === 'metric' ? onBarDrag : undefined}
+        onClick={h.type === 'binary' ? onToggle : undefined}
+        style={{ height: h.type === 'metric' ? 20 : 6, background: '#232c42', borderRadius: h.type === 'metric' ? 10 : 3, marginTop: 10, overflow: 'hidden', cursor: h.type === 'metric' ? 'ew-resize' : 'pointer', position: 'relative', userSelect: 'none', touchAction: 'none', display: 'flex', alignItems: 'center' }}>
+        <div style={{ height: h.type === 'metric' ? '100%' : '100%', borderRadius: h.type === 'metric' ? 10 : 3, background: h.type === 'metric' ? `linear-gradient(90deg,${c}88,${c})` : `linear-gradient(90deg,${c}99,${c})`, width: `${pct}%`, transition: h.type === 'binary' ? 'width .5s cubic-bezier(.34,1.2,.64,1)' : 'none', position: 'relative' }}>
+          {h.type === 'metric' && pct > 0 && (
+            <div style={{ position: 'absolute', right: -1, top: '50%', transform: 'translateY(-50%)', width: 14, height: 14, borderRadius: '50%', background: c, boxShadow: `0 0 8px ${c}`, border: '2px solid #141928' }} />
+          )}
         </div>
       </div>
-      {h.type==='metric' && (
-        <div style={{ marginTop: 10, background: '#1c2235', border: '1px solid #2d3a55', borderRadius: 8, padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 8 }}>
-          <input type="number" inputMode="decimal" min={0} max={(h.target||1)*2} step={0.1} value={h.current_val||0}
-            onChange={e => onMetric(parseFloat(e.target.value)||0)}
+
+      {h.type === 'metric' && (
+        <div style={{ marginTop: 8, background: '#1c2235', border: '1px solid #2d3a55', borderRadius: 8, padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 8, transition: 'border-color .2s' }}>
+          <input type="number" inputMode="decimal" min={0} max={(h.target || 1) * 2} step={0.1} value={h.current_val || 0}
+            onChange={e => onMetric(parseFloat(e.target.value) || 0)}
             style={{ background: 'transparent', border: 'none', color: '#dce4f5', fontFamily: 'var(--mono)', fontSize: 15, fontWeight: 500, width: 52, textAlign: 'right', outline: 'none' }} />
           <span style={{ fontSize: 11, color: '#3d4f68', flex: 1 }}>/ {h.target} {h.unit}</span>
           <span style={{ fontFamily: 'var(--mono)', fontSize: 11, padding: '2px 6px', borderRadius: 4, background: '#232c42', color: pctColor }}>{pct}%</span>
@@ -720,31 +823,38 @@ function HabitCard({ habit: h, idx, onToggle, onMetric, onBarDrag, onEdit }: any
 }
 
 function TaskCard({ task: t, idx, isCompleting, showSub, onComplete, onToggleSub, onToggleSubItem, onEdit }: any) {
-  const isOver = t.rollover||(!!t.due&&(dueDiff(t.due)??0)<0)
+  const isOver = t.rollover || (!!t.due && (dueDiff(t.due) ?? 0) < 0)
   const diff = dueDiff(t.due)
+  const isFuture = t.due && (diff ?? 0) > 0
   return (
-    <div style={{ background: isOver?'rgba(255,77,106,.06)':'#141928', border: `1px solid ${isOver?'rgba(255,77,106,.3)':'#1e2840'}`, borderRadius: 10, padding: '12px 14px', marginBottom: 8, display: 'flex', alignItems: 'flex-start', gap: 10, transition: 'all .2s', animation: isCompleting?'slideOutRight .4s ease forwards':`slideInLeft .4s ease ${idx*.04}s both`, overflow: 'hidden' }}>
-      <div onTouchEnd={onComplete} onClick={onComplete}
-        style={{ width: 24, height: 24, borderRadius: 6, border: `1.5px solid ${isOver?'rgba(255,77,106,.4)':'#3d4f70'}`, background: 'transparent', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', marginTop: 1, flexShrink: 0, minWidth: 24 }}>
-        <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><polyline points="2,6 5,9 10,3" stroke="rgba(255,255,255,.15)" strokeWidth="2" strokeLinecap="round"/></svg>
+    <div style={{ background: isOver ? 'rgba(255,77,106,.06)' : '#141928', border: `1px solid ${isOver ? 'rgba(255,77,106,.3)' : '#1e2840'}`, borderRadius: 10, padding: '12px 14px', marginBottom: 8, display: 'flex', alignItems: 'flex-start', gap: 10, transition: 'all .2s', animation: isCompleting ? 'slideOutRight .4s ease forwards' : `slideInLeft .4s ease ${idx * .04}s both`, overflow: 'hidden' }}>
+      <div onClick={onComplete} onTouchEnd={onComplete}
+        style={{ width: 24, height: 24, borderRadius: 6, border: `1.5px solid ${isOver ? 'rgba(255,77,106,.4)' : '#3d4f70'}`, background: 'transparent', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', marginTop: 1, flexShrink: 0, minWidth: 24, transition: 'all .2s' }}>
+        <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><polyline points="2,6 5,9 10,3" stroke="rgba(255,255,255,.15)" strokeWidth="2" strokeLinecap="round" /></svg>
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.title}</div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 5, flexWrap: 'wrap' }}>
           <PrioBadge prio={t.prio} />
-          {isOver && <span style={{ fontSize: 10, color: '#ff4d6a', fontFamily: 'var(--mono)' }}>⚠</span>}
-          {t.due&&diff!==null && (
-            <span style={{ fontSize: 10, fontFamily: 'var(--mono)', padding: '2px 6px', borderRadius: 4, border: '1px solid', color: diff<0?'#ff4d6a':diff<=3?'#ffb830':'#3d4f68', borderColor: diff<0?'rgba(255,77,106,.25)':diff<=3?'rgba(255,184,48,.25)':'#1e2840', background: diff<0?'rgba(255,77,106,.06)':diff<=3?'rgba(255,184,48,.06)':'transparent' }}>
-              📅 {diff<0?`${Math.abs(diff)}d`:(diff===0?'heute':`+${diff}d`)}
+          {isOver && <span style={{ fontSize: 10, color: '#ff4d6a', fontFamily: 'var(--mono)' }}>⚠ überfällig</span>}
+          {t.due && diff !== null && (
+            <span style={{ fontSize: 10, fontFamily: 'var(--mono)', padding: '2px 6px', borderRadius: 4, border: '1px solid', color: diff < 0 ? '#ff4d6a' : diff === 0 ? '#ffb830' : diff <= 3 ? '#ffb830' : '#3d4f68', borderColor: diff < 0 ? 'rgba(255,77,106,.25)' : diff <= 3 ? 'rgba(255,184,48,.25)' : '#1e2840', background: diff < 0 ? 'rgba(255,77,106,.06)' : diff <= 3 ? 'rgba(255,184,48,.06)' : 'transparent' }}>
+              📅 {diff < 0 ? `${Math.abs(diff)}d` : diff === 0 ? 'heute' : `+${diff}d`}
             </span>
           )}
-          {t.subs.length>0 && <button onTouchEnd={onToggleSub} onClick={onToggleSub} style={{ fontSize: 10, color: '#3d4f68', padding: '2px 5px', background: '#1c2235', borderRadius: 4, border: '1px solid #1e2840', cursor: 'pointer' }}>{showSub?'▲':'▼'} {t.subs.length}</button>}
+          {isFuture && <span style={{ fontSize: 9, color: '#ffb830', fontFamily: 'var(--mono)', padding: '1px 5px', borderRadius: 3, background: 'rgba(255,184,48,.08)', border: '1px solid rgba(255,184,48,.15)' }}>bonus</span>}
+          {t.subs.length > 0 && (
+            <button onClick={onToggleSub} onTouchEnd={onToggleSub} style={{ fontSize: 10, color: '#3d4f68', padding: '2px 6px', background: '#1c2235', borderRadius: 4, border: '1px solid #1e2840', cursor: 'pointer' }}>
+              {showSub ? '▲' : '▼'} {t.subs.length}
+            </button>
+          )}
         </div>
-        {showSub&&t.subs.length>0 && (
-          <div style={{ marginTop: 8, marginLeft: 0, borderLeft: '2px solid #1e2840', paddingLeft: 10, animation: 'fadeIn .2s ease' }}>
-            {t.subs.map((s:Sub,si:number) => (
-              <div key={si} onTouchEnd={() => onToggleSubItem(si)} onClick={() => onToggleSubItem(si)} style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '6px 0', fontSize: 12, color: s.d?'#3d4f68':'#7a88a8', textDecoration: s.d?'line-through':'none', cursor: 'pointer' }}>
-                <div style={{ width: 14, height: 14, borderRadius: 3, border: `1px solid ${s.d?'#00b35c':'#2d3a55'}`, background: s.d?'#00b35c':'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: 8, color: 'white', transition: 'all .2s' }}>{s.d?'✓':''}</div>
+        {showSub && t.subs.length > 0 && (
+          <div style={{ marginTop: 8, borderLeft: '2px solid #1e2840', paddingLeft: 10, animation: 'fadeIn .2s ease' }}>
+            {t.subs.map((s: Sub, si: number) => (
+              <div key={si} onClick={() => onToggleSubItem(si)} onTouchEnd={() => onToggleSubItem(si)}
+                style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '6px 0', fontSize: 12, color: s.d ? '#3d4f68' : '#7a88a8', textDecoration: s.d ? 'line-through' : 'none', cursor: 'pointer' }}>
+                <div style={{ width: 14, height: 14, borderRadius: 3, border: `1px solid ${s.d ? '#00b35c' : '#2d3a55'}`, background: s.d ? '#00b35c' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: 8, color: 'white', transition: 'all .2s' }}>{s.d ? '✓' : ''}</div>
                 {s.t}
               </div>
             ))}
@@ -757,33 +867,33 @@ function TaskCard({ task: t, idx, isCompleting, showSub, onComplete, onToggleSub
 }
 
 function ProjectCard({ project: p, idx, onToggleItem, onToggleSub, onStatusChange, onEdit, onDelete }: any) {
-  const c = COLORS[p.color as BrandColor]||'#3d7fff'
-  const total = p.items.length, done = p.items.filter((i:ProjItem)=>i.d).length
-  const pct = total ? Math.round((done/total)*100) : 0
-  const circ = 2*Math.PI*22
+  const c = COLORS[p.color as BrandColor] || '#3d7fff'
+  const total = p.items.length, done = p.items.filter((i: ProjItem) => i.d).length
+  const pct = total ? Math.round((done / total) * 100) : 0
+  const circ = 2 * Math.PI * 22
   return (
-    <div style={{ background: '#141928', border: '1px solid #1e2840', borderRadius: 12, padding: 16, marginBottom: 12, animation: `fadeIn .4s ease ${idx*.07}s both` }}>
+    <div style={{ background: '#141928', border: '1px solid #1e2840', borderRadius: 12, padding: 16, marginBottom: 12, animation: `fadeIn .4s ease ${idx * .07}s both` }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 12 }}>
         <div style={{ flex: 1, minWidth: 0, marginRight: 8 }}>
           <div style={{ fontSize: 14, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</div>
           <div style={{ fontSize: 11, color: '#3d4f68', marginTop: 3, fontFamily: 'var(--mono)' }}>{p.deadline}</div>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 5, flexShrink: 0 }}>
-          <div style={{ fontSize: 10, padding: '2px 7px', borderRadius: 4, fontFamily: 'var(--mono)', border: '1px solid', color: c, borderColor: c+'30', background: c+'12' }}>{pct}%</div>
-          <select value={p.status} onChange={e=>onStatusChange(e.target.value)} style={{ fontSize: 10, padding: '4px 8px', borderRadius: 5, border: '1px solid #2d3a55', background: '#1c2235', fontFamily: 'var(--mono)', cursor: 'pointer', outline: 'none', color: STATUS_COLORS[p.status as ProjectStatus] }}>
-            {(Object.keys(STATUS_LABELS) as ProjectStatus[]).map(s=><option key={s} value={s}>{STATUS_LABELS[s]}</option>)}
+          <div style={{ fontSize: 9, padding: '2px 7px', borderRadius: 4, fontFamily: 'var(--mono)', border: '1px solid', color: c, borderColor: c + '30', background: c + '12' }}>{pct}%</div>
+          <select value={p.status} onChange={e => onStatusChange(e.target.value)} style={{ fontSize: 10, padding: '4px 8px', borderRadius: 5, border: '1px solid #2d3a55', background: '#1c2235', fontFamily: 'var(--mono)', cursor: 'pointer', outline: 'none', color: STATUS_COLORS[p.status as ProjectStatus] }}>
+            {(Object.keys(STATUS_LABELS) as ProjectStatus[]).map(s => <option key={s} value={s}>{STATUS_LABELS[s]}</option>)}
           </select>
           <div style={{ display: 'flex', gap: 4 }}>
-            <button onClick={onEdit} style={{ padding: '5px 10px', background: 'rgba(61,127,255,.08)', border: '1px solid rgba(61,127,255,.2)', borderRadius: 6, color: '#3d7fff', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>✏</button>
-            <button onClick={onDelete} style={{ padding: '5px 10px', background: 'rgba(255,77,106,.08)', border: '1px solid rgba(255,77,106,.2)', borderRadius: 6, color: '#ff4d6a', cursor: 'pointer', fontSize: 11 }}>🗑</button>
+            <button onClick={onEdit} style={editBtnStyle}>✏</button>
+            <button onClick={onDelete} style={deleteBtnStyle}>🗑</button>
           </div>
         </div>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, paddingBottom: 12, borderBottom: '1px solid #1e2840' }}>
         <div style={{ position: 'relative', flexShrink: 0 }}>
           <svg width="48" height="48" viewBox="0 0 52 52">
-            <circle cx="26" cy="26" r="22" fill="none" stroke={c+'20'} strokeWidth="5"/>
-            <circle cx="26" cy="26" r="22" fill="none" stroke={c} strokeWidth="5" strokeLinecap="round" strokeDasharray={circ} strokeDashoffset={circ-(pct/100)*circ} transform="rotate(-90 26 26)" style={{ transition: 'stroke-dashoffset .8s' }}/>
+            <circle cx="26" cy="26" r="22" fill="none" stroke={c + '20'} strokeWidth="5" />
+            <circle cx="26" cy="26" r="22" fill="none" stroke={c} strokeWidth="5" strokeLinecap="round" strokeDasharray={circ} strokeDashoffset={circ - (pct / 100) * circ} transform="rotate(-90 26 26)" style={{ transition: 'stroke-dashoffset .8s' }} />
           </svg>
           <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', fontFamily: 'var(--mono)', fontSize: 10, fontWeight: 500, color: c }}>{pct}%</div>
         </div>
@@ -792,15 +902,15 @@ function ProjectCard({ project: p, idx, onToggleItem, onToggleSub, onStatusChang
           <div style={{ display: 'flex', justifyContent: 'space-between', color: '#7a88a8' }}><span>Status</span><span style={{ color: STATUS_COLORS[p.status as ProjectStatus] }}>{STATUS_LABELS[p.status as ProjectStatus]}</span></div>
         </div>
       </div>
-      {p.items.map((item:ProjItem,ii:number)=>(
+      {p.items.map((item: ProjItem, ii: number) => (
         <div key={ii}>
-          <div onTouchEnd={()=>onToggleItem(ii)} onClick={()=>onToggleItem(ii)} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 0', fontSize: 13, color: item.d?'#3d4f68':'#7a88a8', textDecoration: item.d?'line-through':'none', borderBottom: ii<p.items.length-1?'1px solid #1e2840':'none', cursor: 'pointer', transition: 'color .2s' }}>
-            <div style={{ width: 16, height: 16, borderRadius: 4, border: `1.5px solid ${item.d?'#00b35c':'#2d3a55'}`, background: item.d?'#00b35c':'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: 9, color: 'white', transition: 'all .25s' }}>{item.d?'✓':''}</div>
+          <div onClick={() => onToggleItem(ii)} onTouchEnd={() => onToggleItem(ii)} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 0', fontSize: 13, color: item.d ? '#3d4f68' : '#7a88a8', textDecoration: item.d ? 'line-through' : 'none', borderBottom: ii < p.items.length - 1 ? '1px solid #1e2840' : 'none', cursor: 'pointer' }}>
+            <div style={{ width: 16, height: 16, borderRadius: 4, border: `1.5px solid ${item.d ? '#00b35c' : '#2d3a55'}`, background: item.d ? '#00b35c' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: 9, color: 'white', transition: 'all .25s' }}>{item.d ? '✓' : ''}</div>
             {item.t}
           </div>
-          {item.subs.map((s:Sub,si:number)=>(
-            <div key={si} onTouchEnd={()=>onToggleSub(ii,si)} onClick={()=>onToggleSub(ii,si)} style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '5px 0 5px 24px', fontSize: 12, color: s.d?'#3d4f68':'#3d4f68', textDecoration: s.d?'line-through':'none', cursor: 'pointer' }}>
-              <div style={{ width: 12, height: 12, borderRadius: 2, border: `1px solid ${s.d?'#00b35c':'#1e2840'}`, background: s.d?'#00b35c':'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: 7, color: 'white' }}>{s.d?'✓':''}</div>
+          {item.subs.map((s: Sub, si: number) => (
+            <div key={si} onClick={() => onToggleSub(ii, si)} onTouchEnd={() => onToggleSub(ii, si)} style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '5px 0 5px 24px', fontSize: 12, color: '#3d4f68', textDecoration: s.d ? 'line-through' : 'none', cursor: 'pointer' }}>
+              <div style={{ width: 12, height: 12, borderRadius: 2, border: `1px solid ${s.d ? '#00b35c' : '#1e2840'}`, background: s.d ? '#00b35c' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: 7, color: 'white' }}>{s.d ? '✓' : ''}</div>
               {s.t}
             </div>
           ))}
@@ -810,24 +920,55 @@ function ProjectCard({ project: p, idx, onToggleItem, onToggleSub, onStatusChang
   )
 }
 
+// ── FIX #3: Analytics with correct date mapping ───────────
 function Analytics({ history, compact }: { history: DaySummary[]; compact?: boolean }) {
-  const now = new Date(), year = now.getFullYear()
-  const start = new Date(year,0,1)
-  const days:Date[] = []
-  for (let i=0;i<364;i++) { const d=new Date(start);d.setDate(d.getDate()+i);days.push(d) }
-  const scores = days.map(d => { const ds=d.toISOString().split('T')[0]; const e=history.find(h=>h.date===ds); return e?e.life_score:null })
-  const real = scores.filter(s=>s!==null) as number[]
-  const avg7 = real.length?Math.round(real.slice(-7).reduce((a,b)=>a+b,0)/Math.min(7,real.slice(-7).length)):0
-  const avg30 = real.length?Math.round(real.slice(-30).reduce((a,b)=>a+b,0)/Math.min(30,real.slice(-30).length)):0
-  const avgY = real.length?Math.round(real.reduce((a,b)=>a+b,0)/real.length):0
-  let cur=0,maxStr=0; real.forEach(s=>{if(s>70){cur++;maxStr=Math.max(maxStr,cur)}else cur=0})
-  const MONTHS=['Jan','Feb','Mär','Apr','Mai','Jun','Jul','Aug','Sep','Okt','Nov','Dez']
-  const lblArr=new Array(52).fill(''); let lastM=-1
-  days.forEach((d,i)=>{if(d.getMonth()!==lastM){const col=Math.floor(i/7);if(col<52)lblArr[col]=MONTHS[d.getMonth()];lastM=d.getMonth()}})
-  const isEmpty = real.length===0
+  const now = new Date()
+  const year = now.getFullYear()
+
+  // Build a map from date string → score for O(1) lookup
+  const scoreMap: Record<string, number> = {}
+  history.forEach(h => { scoreMap[h.date] = h.life_score })
+
+  // Generate all 364 days of the year starting from Jan 1
+  const startOfYear = new Date(year, 0, 1)
+  const days: Date[] = []
+  for (let i = 0; i < 364; i++) {
+    const d = new Date(startOfYear)
+    d.setDate(startOfYear.getDate() + i)
+    days.push(d)
+  }
+
+  // Map each day to its score (null = no data / future)
+  const scores: (number | null)[] = days.map(d => {
+    const ds = d.toISOString().split('T')[0]
+    if (scoreMap[ds] !== undefined) return scoreMap[ds]
+    if (d > now) return null   // future → no data
+    return null                // past with no entry → null (shown as empty, not fake)
+  })
+
+  const real = scores.filter(s => s !== null) as number[]
+  const avg7 = real.length ? Math.round(real.slice(-7).reduce((a, b) => a + b, 0) / Math.min(7, real.slice(-7).length)) : 0
+  const avg30 = real.length ? Math.round(real.slice(-30).reduce((a, b) => a + b, 0) / Math.min(30, real.slice(-30).length)) : 0
+  const avgY = real.length ? Math.round(real.reduce((a, b) => a + b, 0) / real.length) : 0
+  let cur = 0, maxStr = 0; real.forEach(s => { if (s > 70) { cur++; maxStr = Math.max(maxStr, cur) } else cur = 0 })
+  const delta = avg7 - avg30
+
+  // Month labels: one label per column (week), placed at the first day of each month
+  const MONTHS = ['Jan', 'Feb', 'Mär', 'Apr', 'Mai', 'Jun', 'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Dez']
+  const lblArr = new Array(52).fill('')
+  let lastMonth = -1
+  days.forEach((d, i) => {
+    const col = Math.floor(i / 7)
+    if (d.getMonth() !== lastMonth && col < 52) {
+      lblArr[col] = MONTHS[d.getMonth()]
+      lastMonth = d.getMonth()
+    }
+  })
+
+  const isEmpty = real.length === 0
 
   return (
-    <div style={{ background: '#0f1420', border: '1px solid #1e2840', borderRadius: 18, padding: compact?16:20, animation: 'fadeIn .6s ease .5s both' }}>
+    <div style={{ background: '#0f1420', border: '1px solid #1e2840', borderRadius: 18, padding: compact ? 16 : 20, animation: 'fadeIn .6s ease .5s both' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
         <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 2, color: '#7a88a8' }}>Analytics {year}</div>
         {isEmpty && <div style={{ fontSize: 10, color: '#3d4f68' }}>Noch keine Daten</div>}
@@ -836,27 +977,34 @@ function Analytics({ history, compact }: { history: DaySummary[]; compact?: bool
         <div style={{ textAlign: 'center', padding: '24px 0', color: '#3d4f68' }}>
           <div style={{ fontSize: 28, marginBottom: 10 }}>📊</div>
           <div style={{ fontSize: 12 }}>Analytics erscheinen nach dem ersten gespeicherten Tag.</div>
+          <div style={{ fontSize: 11, marginTop: 6, color: '#1e2840' }}>Klick auf "Tagesanalyse" → "In Supabase speichern"</div>
         </div>
       ) : (
         <>
-          <div style={{ display: 'grid', gridTemplateColumns: compact?'1fr 1fr':'repeat(4,1fr)', gap: compact?8:12, marginBottom: 16 }}>
-            {[{lbl:'7-Tage Avg',val:avg7+'%',delta:(avg7-avg30>=0?'+':'')+(avg7-avg30)+'% vs 30d',pos:avg7-avg30>=0},{lbl:'30-Tage Avg',val:avg30+'%'},{lbl:'Streak',val:maxStr+'d',delta:'Tage über 70%',pos:true},{lbl:'Jahr Avg',val:avgY+'%'}].map(s=>(
+          <div style={{ display: 'grid', gridTemplateColumns: compact ? '1fr 1fr' : 'repeat(4,1fr)', gap: compact ? 8 : 12, marginBottom: 16 }}>
+            {[
+              { lbl: '7-Tage Avg', val: avg7 + '%', extra: (delta >= 0 ? '+' : '') + delta + '% vs 30d', pos: delta >= 0 },
+              { lbl: '30-Tage Avg', val: avg30 + '%' },
+              { lbl: 'Streak', val: maxStr + 'd', extra: 'Tage über 70%', pos: true },
+              { lbl: 'Jahr Avg', val: avgY + '%' }
+            ].map(s => (
               <div key={s.lbl} style={{ background: '#141928', borderRadius: 10, padding: '12px 10px', border: '1px solid #1e2840' }}>
-                <div style={{ fontSize: 10, color: '#7a88a8', textTransform: 'uppercase', letterSpacing: '.5px', whiteSpace: 'nowrap' }}>{s.lbl}</div>
-                <div style={{ fontFamily: 'var(--mono)', fontSize: compact?16:20, fontWeight: 500, marginTop: 3 }}>{s.val}</div>
-                {s.delta && <div style={{ fontSize: 10, fontFamily: 'var(--mono)', marginTop: 2, color: s.pos?'#00e87a':'#ff4d6a', whiteSpace: 'nowrap' }}>{s.delta}</div>}
+                <div style={{ fontSize: 10, color: '#7a88a8', textTransform: 'uppercase', letterSpacing: '.5px' }}>{s.lbl}</div>
+                <div style={{ fontFamily: 'var(--mono)', fontSize: compact ? 16 : 20, fontWeight: 500, marginTop: 3 }}>{s.val}</div>
+                {s.extra && <div style={{ fontSize: 10, fontFamily: 'var(--mono)', marginTop: 2, color: s.pos ? '#00e87a' : '#ff4d6a' }}>{s.extra}</div>}
               </div>
             ))}
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(52,1fr)', gap: 2, marginBottom: 3 }}>
-            {lblArr.map((l,i)=><span key={i} style={{ fontSize: 8, color: '#3d4f68', fontFamily: 'var(--mono)', overflow: 'hidden' }}>{l}</span>)}
+            {lblArr.map((l, i) => <span key={i} style={{ fontSize: 8, color: '#3d4f68', fontFamily: 'var(--mono)', overflow: 'hidden' }}>{l}</span>)}
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(52,1fr)', gap: 2 }}>
-            {scores.map((s,i)=>(
-              <div key={i} title={`${days[i]?.toLocaleDateString('de-DE')} ${s!==null?s+'%':'—'}`}
-                style={{ aspectRatio: '1', borderRadius: 2, background: s!==null&&s>0?scoreColor(s):'#141928', opacity: s===null?.3:1, transition: 'transform .1s', cursor: 'pointer' }}
-                onMouseEnter={e=>(e.target as HTMLElement).style.transform='scale(1.6)'}
-                onMouseLeave={e=>(e.target as HTMLElement).style.transform='scale(1)'} />
+            {scores.map((s, i) => (
+              <div key={i}
+                title={`${days[i]?.toLocaleDateString('de-DE')} ${s !== null ? '— ' + s + '%' : '— kein Eintrag'}`}
+                style={{ aspectRatio: '1', borderRadius: 2, background: s !== null && s > 0 ? scoreColor(s) : s === null ? '#0f1420' : '#141928', cursor: 'pointer', transition: 'transform .1s', border: '1px solid rgba(255,255,255,.02)' }}
+                onMouseEnter={e => (e.target as HTMLElement).style.transform = 'scale(1.6)'}
+                onMouseLeave={e => (e.target as HTMLElement).style.transform = 'scale(1)'} />
             ))}
           </div>
         </>
@@ -865,7 +1013,7 @@ function Analytics({ history, compact }: { history: DaySummary[]; compact?: bool
   )
 }
 
-// ── Modals wrapper ───────────────────────────────────────
+// ── Modals wrapper ────────────────────────────────────────
 function Modals({ modal, setModal, analysisOpen, setAnalysisOpen, manageOpen, setManageOpen, habits, tasks, projects, hScore, tScore, life, history, streak, onSaveHabit, onSaveTask, onSaveProject, onEditHabit, onEditTask, onDeleteHabit, onDeleteTask, onSaveAnalysis }: any) {
   return (
     <>
@@ -877,27 +1025,27 @@ function Modals({ modal, setModal, analysisOpen, setAnalysisOpen, manageOpen, se
 }
 
 function AnalysisModal({ hScore, tScore, life, history, projects, streak, onClose, onSave }: any) {
-  const yesterday = history.length ? history[history.length-1]?.life_score ?? 0 : 0
+  const yesterday = history.length ? history[history.length - 1]?.life_score ?? 0 : 0
   const delta = life - yesterday
-  const pdone = projects.length ? Math.round(projects.reduce((a:number,p:Project)=>{const t=p.items.length,d=p.items.filter((i:ProjItem)=>i.d).length;return a+(t?d/t:0)},0)/projects.length*100) : 0
-  const TITLES: Record<number,string> = {100:'Legendärer Tag! 🏆',80:'Starke Leistung! 💪',60:'Solider Fortschritt 👍',40:'Gut angefangen ✊',0:'Weiter so! 🌱'}
-  const lvl = life>=100?100:life>=80?80:life>=60?60:life>=40?40:0
-  const PCOLS = ['#00e87a','#3d7fff','#9b6dff','#ffb830','#ff4d6a','#00d4c8']
+  const pdone = projects.length ? Math.round(projects.reduce((a: number, p: Project) => { const t = p.items.length, d = p.items.filter((i: ProjItem) => i.d).length; return a + (t ? d / t : 0) }, 0) / projects.length * 100) : 0
+  const TITLES: Record<number, string> = { 100: 'Legendärer Tag! 🏆', 80: 'Starke Leistung! 💪', 60: 'Solider Fortschritt 👍', 40: 'Gut angefangen ✊', 0: 'Weiter so! 🌱' }
+  const lvl = life >= 100 ? 100 : life >= 80 ? 80 : life >= 60 ? 60 : life >= 40 ? 40 : 0
+  const PCOLS = ['#00e87a', '#3d7fff', '#9b6dff', '#ffb830', '#ff4d6a', '#00d4c8']
   return (
     <ModalWrapper onClose={onClose}>
       <div style={{ position: 'relative', overflow: 'hidden' }}>
         <div style={{ position: 'absolute', width: 260, height: 260, borderRadius: '50%', background: 'radial-gradient(circle,rgba(0,232,122,.12),transparent 70%)', top: -80, left: '50%', transform: 'translateX(-50%)', pointerEvents: 'none' }} />
         <div style={{ position: 'absolute', inset: 0, overflow: 'hidden', pointerEvents: 'none' }}>
-          {PCOLS.map((c,i)=><div key={i} style={{ position: 'absolute', width: 5, height: 5, borderRadius: '50%', background: c, left: `${10+i*15}%`, bottom: 0, animation: `float ${2+i*.3}s ease-in ${i*.4}s infinite` }}/>)}
+          {PCOLS.map((c, i) => <div key={i} style={{ position: 'absolute', width: 5, height: 5, borderRadius: '50%', background: c, left: `${10 + i * 15}%`, bottom: 0, animation: `float ${2 + i * .3}s ease-in ${i * .4}s infinite` }} />)}
         </div>
         <div style={{ position: 'relative', textAlign: 'center' }}>
           <div style={{ fontSize: 11, color: '#3d4f68', textTransform: 'uppercase', letterSpacing: 2, fontWeight: 600 }}>Tagesanalyse</div>
-          <div style={{ fontFamily: 'var(--mono)', fontSize: 64, fontWeight: 500, background: 'linear-gradient(135deg,#00e87a,#00d4c8)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', lineHeight: 1.1, margin: '12px 0 6px', animation: 'popIn .5s cubic-bezier(.34,1.56,.64,1)' }}>{life}%</div>
+          <div style={{ fontFamily: 'var(--mono)', fontSize: 60, fontWeight: 500, background: 'linear-gradient(135deg,#00e87a,#00d4c8)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', lineHeight: 1.1, margin: '12px 0 6px', animation: 'popIn .5s cubic-bezier(.34,1.56,.64,1)' }}>{life}%</div>
           <div style={{ fontSize: 22, fontWeight: 800, letterSpacing: -1, marginBottom: 4 }}>{TITLES[lvl]}</div>
           {streak > 0 && <div style={{ fontSize: 13, color: '#00e87a', marginBottom: 12 }}>🔥 {streak} Tage Streak!</div>}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10, margin: '16px 0' }}>
-            {[{val:hScore+'%',lbl:'Habits',col:'#00e87a'},{val:tScore+'%',lbl:'Tasks',col:'#3d7fff'},{val:pdone+'%',lbl:'Projekte',col:'#9b6dff'}].map((s,i)=>(
-              <div key={s.lbl} style={{ background: '#141928', borderRadius: 10, padding: 12, border: '1px solid #1e2840', animation: `popIn .4s ease ${i*.1}s both` }}>
+            {[{ val: hScore + '%', lbl: 'Habits', col: '#00e87a' }, { val: tScore + '%', lbl: 'Tasks', col: '#3d7fff' }, { val: pdone + '%', lbl: 'Projekte', col: '#9b6dff' }].map((s, i) => (
+              <div key={s.lbl} style={{ background: '#141928', borderRadius: 10, padding: 12, border: '1px solid #1e2840', animation: `popIn .4s ease ${i * .1}s both` }}>
                 <div style={{ fontFamily: 'var(--mono)', fontSize: 20, fontWeight: 500, marginBottom: 3, color: s.col }}>{s.val}</div>
                 <div style={{ fontSize: 10, color: '#7a88a8', textTransform: 'uppercase', letterSpacing: 1 }}>{s.lbl}</div>
               </div>
@@ -905,7 +1053,7 @@ function AnalysisModal({ hScore, tScore, life, history, projects, streak, onClos
           </div>
           <div style={{ fontSize: 13, color: '#7a88a8', padding: 12, background: '#141928', borderRadius: 10, marginBottom: 16, border: '1px solid #1e2840' }}>
             Gestern: <b style={{ color: '#dce4f5' }}>{yesterday}%</b> → Heute: <b style={{ color: '#dce4f5' }}>{life}%</b> —{' '}
-            {delta>=0?<b style={{ color: '#00e87a' }}>+{delta}% besser 📈</b>:<span style={{ color: '#ffb830' }}>{delta}% – morgen!</span>}
+            {delta >= 0 ? <b style={{ color: '#00e87a' }}>+{delta}% besser 📈</b> : <span style={{ color: '#ffb830' }}>{delta}% – morgen!</span>}
           </div>
           <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
             <Btn onClick={onSave}>💾 In Supabase speichern</Btn>
@@ -919,7 +1067,7 @@ function AnalysisModal({ hScore, tScore, life, history, projects, streak, onClos
 }
 
 function ManageModal({ habits, tasks, onClose, onEditHabit, onEditTask, onDeleteHabit, onDeleteTask }: any) {
-  const [tab, setTab] = useState<'habits'|'tasks'>('habits')
+  const [tab, setTab] = useState<'habits' | 'tasks'>('habits')
   return (
     <ModalWrapper onClose={onClose} noPad>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '20px 24px 0' }}>
@@ -927,33 +1075,33 @@ function ManageModal({ habits, tasks, onClose, onEditHabit, onEditTask, onDelete
         <button onClick={onClose} style={{ width: 28, height: 28, borderRadius: 7, background: '#1c2235', border: '1px solid #2d3a55', color: '#7a88a8', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15 }}>✕</button>
       </div>
       <div style={{ display: 'flex', gap: 8, padding: '14px 24px 0' }}>
-        {(['habits','tasks'] as const).map(t=>(
-          <button key={t} onClick={()=>setTab(t)} style={{ flex: 1, padding: '9px', borderRadius: 9, border: `1px solid ${tab===t?'#3d7fff':'#1e2840'}`, background: tab===t?'rgba(61,127,255,.15)':'#141928', color: tab===t?'#dce4f5':'#7a88a8', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', transition: 'all .2s' }}>
-            {t==='habits'?`Habits (${habits.length})`:`Tasks (${tasks.length})`}
+        {(['habits', 'tasks'] as const).map(t => (
+          <button key={t} onClick={() => setTab(t)} style={{ flex: 1, padding: '9px', borderRadius: 9, border: `1px solid ${tab === t ? '#3d7fff' : '#1e2840'}`, background: tab === t ? 'rgba(61,127,255,.15)' : '#141928', color: tab === t ? '#dce4f5' : '#7a88a8', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', transition: 'all .2s' }}>
+            {t === 'habits' ? `Habits (${habits.length})` : `Tasks (${tasks.length})`}
           </button>
         ))}
       </div>
       <div style={{ flex: 1, overflowY: 'auto', padding: '14px 24px 24px', maxHeight: '60vh' }}>
-        {tab==='habits' && habits.map((h:Habit,i:number)=>(
-          <div key={h.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', background: '#141928', borderRadius: 10, marginBottom: 8, border: '1px solid #1e2840', animation: `slideInLeft .3s ease ${i*.03}s both` }}>
+        {tab === 'habits' && habits.map((h: Habit, i: number) => (
+          <div key={h.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', background: '#141928', borderRadius: 10, marginBottom: 8, border: '1px solid #1e2840', animation: `slideInLeft .3s ease ${i * .03}s both` }}>
             <div style={{ width: 8, height: 8, borderRadius: '50%', background: COLORS[h.color], flexShrink: 0 }} />
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{h.name}</div>
-              <div style={{ fontSize: 10, color: '#3d4f68', fontFamily: 'var(--mono)' }}>{h.type} · {h.active_days.length===7?'täglich':h.active_days.map((d:number)=>DSHORT[d]).join(', ')}</div>
+              <div style={{ fontSize: 10, color: '#3d4f68', fontFamily: 'var(--mono)' }}>{h.type} · {h.active_days.length === 7 ? 'täglich' : h.active_days.map((d: number) => DSHORT[d]).join(', ')}</div>
             </div>
-            <button onClick={()=>onEditHabit(h)} style={editBtnStyle}>✏</button>
-            <button onClick={()=>onDeleteHabit(h.id)} style={deleteBtnStyle}>🗑</button>
+            <button onClick={() => onEditHabit(h)} style={editBtnStyle}>✏</button>
+            <button onClick={() => onDeleteHabit(h.id)} style={deleteBtnStyle}>🗑</button>
           </div>
         ))}
-        {tab==='tasks' && tasks.map((t:Task,i:number)=>(
-          <div key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', background: '#141928', borderRadius: 10, marginBottom: 8, border: '1px solid #1e2840', opacity: t.done?.7:1, animation: `slideInLeft .3s ease ${i*.03}s both` }}>
-            <div style={{ width: 8, height: 8, borderRadius: '50%', background: {high:'#ff4d6a',med:'#ffb830',low:'#3d4f68'}[t.prio], flexShrink: 0 }} />
+        {tab === 'tasks' && tasks.map((t: Task, i: number) => (
+          <div key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', background: '#141928', borderRadius: 10, marginBottom: 8, border: '1px solid #1e2840', opacity: t.done ? .7 : 1, animation: `slideInLeft .3s ease ${i * .03}s both` }}>
+            <div style={{ width: 8, height: 8, borderRadius: '50%', background: { high: '#ff4d6a', med: '#ffb830', low: '#3d4f68' }[t.prio], flexShrink: 0 }} />
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textDecoration: t.done?'line-through':'none', color: t.done?'#3d4f68':'#dce4f5' }}>{t.title}</div>
-              <div style={{ fontSize: 10, color: '#3d4f68', fontFamily: 'var(--mono)' }}>{t.prio}{t.done?' · ✓':t.due?` · ${t.due}`:''}</div>
+              <div style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textDecoration: t.done ? 'line-through' : 'none', color: t.done ? '#3d4f68' : '#dce4f5' }}>{t.title}</div>
+              <div style={{ fontSize: 10, color: '#3d4f68', fontFamily: 'var(--mono)' }}>{t.prio}{t.done ? ' · ✓' : t.due ? ` · ${t.due}` : ''}</div>
             </div>
-            {!t.done && <button onClick={()=>onEditTask(t)} style={editBtnStyle}>✏</button>}
-            <button onClick={()=>onDeleteTask(t.id)} style={deleteBtnStyle}>🗑</button>
+            {!t.done && <button onClick={() => onEditTask(t)} style={editBtnStyle}>✏</button>}
+            <button onClick={() => onDeleteTask(t.id)} style={deleteBtnStyle}>🗑</button>
           </div>
         ))}
       </div>
@@ -961,6 +1109,7 @@ function ManageModal({ habits, tasks, onClose, onEditHabit, onEditTask, onDelete
   )
 }
 
+// ── AddModal ─────────────────────────────────────────────
 function AddModal({ type: initType, editId, habits, tasks, projects, onClose, onSaveHabit, onSaveTask, onSaveProject }: any) {
   const isMobile = useIsMobile()
   const [type, setType] = useState(initType)
@@ -978,110 +1127,117 @@ function AddModal({ type: initType, editId, habits, tasks, projects, onClose, on
 
   useEffect(() => {
     if (!editId) return
-    if (initType==='habit') { const h=habits.find((x:Habit)=>x.id===editId); if(h){setTitle(h.name);setColor(h.color);setHType(h.type);setActiveDays(h.active_days);setTarget(h.target?.toString()||'');setUnit(h.unit||'')} }
-    if (initType==='task') { const t=tasks.find((x:Task)=>x.id===editId); if(t){setTitle(t.title);setPrio(t.prio);setDue(t.due||'');setSubsRaw(t.subs.map((s:Sub)=>s.t).join(', '))} }
-    if (initType==='project') { const p=projects.find((x:Project)=>x.id===editId); if(p){setTitle(p.name);setColor(p.color);setDeadline(p.deadline);setProjItems([...p.items.map((i:ProjItem)=>i.t),'']})} }
+    if (initType === 'habit') { const h = habits.find((x: Habit) => x.id === editId); if (h) { setTitle(h.name); setColor(h.color); setHType(h.type); setActiveDays(h.active_days); setTarget(h.target?.toString() || ''); setUnit(h.unit || '') } }
+    if (initType === 'task') { const t = tasks.find((x: Task) => x.id === editId); if (t) { setTitle(t.title); setPrio(t.prio); setDue(t.due || ''); setSubsRaw(t.subs.map((s: Sub) => s.t).join(', ')) } }
+    if (initType === 'project') { const p = projects.find((x: Project) => x.id === editId); if (p) { setTitle(p.name); setColor(p.color); setDeadline(p.deadline); setProjItems([...p.items.map((i: ProjItem) => i.t), '']) } }
   }, [editId])
 
   function submit() {
     if (!title.trim()) return
-    if (type==='task') { const subs=subsRaw.split(',').map(s=>s.trim()).filter(Boolean).map(t=>({t,d:false})); onSaveTask({id:editId||Date.now().toString(),title:title.trim(),prio,rollover:false,done:false,subs,due}) }
-    else if (type==='habit') { const days=activeDays.length?activeDays:[0,1,2,3,4,5,6]; onSaveHabit({id:editId||Date.now().toString(),name:title.trim(),color,type:hType,active_days:days,done:false,pct:0,target:hType==='metric'?parseFloat(target)||1:undefined,unit:hType==='metric'?unit:undefined,current_val:0}) }
-    else { const items=projItems.filter(s=>s.trim()).map(t=>({t:t.trim(),d:false,subs:[]})); onSaveProject({id:editId||Date.now().toString(),name:title.trim(),color,deadline,status:'on-track' as ProjectStatus,items}) }
+    if (type === 'task') {
+      const subs = subsRaw.split(',').map(s => s.trim()).filter(Boolean).map(t => ({ t, d: false }))
+      onSaveTask({ id: editId || Date.now().toString(), title: title.trim(), prio, rollover: false, done: false, subs, due: due || '' })
+    } else if (type === 'habit') {
+      const days = activeDays.length ? activeDays : [0,1,2,3,4,5,6]
+      onSaveHabit({ id: editId || Date.now().toString(), name: title.trim(), color, type: hType, active_days: days, done: false, pct: 0, target: hType === 'metric' ? parseFloat(target) || 1 : undefined, unit: hType === 'metric' ? unit : undefined, current_val: 0 })
+    } else {
+      const items = projItems.filter(s => s.trim()).map(t => ({ t: t.trim(), d: false, subs: [] }))
+      onSaveProject({ id: editId || Date.now().toString(), name: title.trim(), color, deadline, status: 'on-track' as ProjectStatus, items })
+    }
   }
 
-  const IS: React.CSSProperties = { width: '100%', background: '#141928', border: '1px solid #2d3a55', borderRadius: 8, color: '#dce4f5', fontFamily: 'inherit', fontSize: 15, padding: '11px 12px', outline: 'none', WebkitAppearance: 'none' }
+  const IS: React.CSSProperties = { width: '100%', background: '#141928', border: '1px solid #2d3a55', borderRadius: 8, color: '#dce4f5', fontFamily: 'inherit', fontSize: 15, padding: '11px 12px', outline: 'none', WebkitAppearance: 'none' as any }
 
   const content = (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
-        <span style={{ fontSize: 18, fontWeight: 800, letterSpacing: -.5 }}>{editId?'Bearbeiten':'Neu erstellen'}</span>
-        <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, background: '#1c2235', border: '1px solid #2d3a55', color: '#7a88a8', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, flexShrink: 0 }}>✕</button>
+        <span style={{ fontSize: 18, fontWeight: 800, letterSpacing: -.5 }}>{editId ? 'Bearbeiten' : 'Neu erstellen'}</span>
+        <button onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, background: '#1c2235', border: '1px solid #2d3a55', color: '#7a88a8', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16 }}>✕</button>
       </div>
       {!editId && (
         <div style={{ display: 'flex', gap: 8, marginBottom: 20 }}>
-          {(['task','habit','project'] as const).map(t=>(
-            <button key={t} onClick={()=>setType(t)} style={{ flex: 1, padding: '10px 6px', borderRadius: 9, border: `1px solid ${type===t?'#3d7fff':'#1e2840'}`, background: type===t?'rgba(61,127,255,.15)':'#141928', color: type===t?'#dce4f5':'#7a88a8', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', transition: 'all .2s' }}>
-              {{task:'Task',habit:'Habit',project:'Projekt'}[t]}
+          {(['task', 'habit', 'project'] as const).map(t => (
+            <button key={t} onClick={() => setType(t)} style={{ flex: 1, padding: '10px 6px', borderRadius: 9, border: `1px solid ${type === t ? '#3d7fff' : '#1e2840'}`, background: type === t ? 'rgba(61,127,255,.15)' : '#141928', color: type === t ? '#dce4f5' : '#7a88a8', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', transition: 'all .2s' }}>
+              {{ task: 'Task', habit: 'Habit', project: 'Projekt' }[t]}
             </button>
           ))}
         </div>
       )}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-        <MF label="Titel"><input autoFocus value={title} onChange={e=>setTitle(e.target.value)} placeholder={type==='task'?'Was willst du erledigen?':type==='habit'?'Habit-Name…':'Projektname…'} style={IS} /></MF>
-        {type==='task' && <>
+        <MF label="Titel"><input autoFocus value={title} onChange={e => setTitle(e.target.value)} placeholder={type === 'task' ? 'Was willst du erledigen?' : type === 'habit' ? 'Habit-Name…' : 'Projektname…'} style={IS} onFocus={e => (e.target.style.borderColor = '#3d7fff')} onBlur={e => (e.target.style.borderColor = '#2d3a55')} /></MF>
+        {type === 'task' && <>
           <MF label="Priorität">
             <div style={{ display: 'flex', gap: 8 }}>
-              {(['high','med','low'] as Priority[]).map(p=>{
-                const cols:Record<Priority,string>={high:'#ff4d6a',med:'#ffb830',low:'#3d4f68'}
-                const active=prio===p
-                return <button key={p} onClick={()=>setPrio(p)} style={{ flex: 1, padding: '10px 8px', borderRadius: 8, border: `1px solid ${active?cols[p]:'#1e2840'}`, background: active?cols[p]+'18':'#141928', color: active?cols[p]:'#7a88a8', fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', transition: 'all .2s' }}>
-                  {{high:'🔴 High',med:'🟡 Med',low:'⚪ Low'}[p]}
+              {(['high', 'med', 'low'] as Priority[]).map(p => {
+                const cols: Record<Priority, string> = { high: '#ff4d6a', med: '#ffb830', low: '#3d4f68' }
+                const active = prio === p
+                return <button key={p} onClick={() => setPrio(p)} style={{ flex: 1, padding: '10px 8px', borderRadius: 8, border: `1px solid ${active ? cols[p] : '#1e2840'}`, background: active ? cols[p] + '18' : '#141928', color: active ? cols[p] : '#7a88a8', fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', transition: 'all .2s' }}>
+                  {{ high: '🔴 High', med: '🟡 Med', low: '⚪ Low' }[p]}
                 </button>
               })}
             </div>
           </MF>
-          <MF label="Fälligkeitsdatum"><input type="date" value={due} onChange={e=>setDue(e.target.value)} style={IS} /></MF>
-          <MF label="Sub-Tasks (Komma)"><input value={subsRaw} onChange={e=>setSubsRaw(e.target.value)} placeholder="Recherche, Entwurf" style={IS} /></MF>
+          <MF label="Fälligkeitsdatum"><input type="date" value={due} onChange={e => setDue(e.target.value)} style={IS} /></MF>
+          <MF label="Sub-Tasks (Komma)"><input value={subsRaw} onChange={e => setSubsRaw(e.target.value)} placeholder="Recherche, Entwurf" style={IS} /></MF>
         </>}
-        {type==='habit' && <>
+        {type === 'habit' && <>
           <MF label="Typ">
             <div style={{ display: 'flex', gap: 8 }}>
-              {(['binary','metric'] as HabitType[]).map(t=>(
-                <button key={t} onClick={()=>setHType(t)} style={{ flex: 1, padding: '10px 8px', borderRadius: 8, border: `1px solid ${hType===t?'#3d7fff':'#1e2840'}`, background: hType===t?'rgba(61,127,255,.1)':'#141928', color: hType===t?'#3d7fff':'#7a88a8', fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', transition: 'all .2s' }}>
-                  {t==='binary'?'✓ Binary':'📊 Metrisch'}
+              {(['binary', 'metric'] as HabitType[]).map(t => (
+                <button key={t} onClick={() => setHType(t)} style={{ flex: 1, padding: '10px 8px', borderRadius: 8, border: `1px solid ${hType === t ? '#3d7fff' : '#1e2840'}`, background: hType === t ? 'rgba(61,127,255,.1)' : '#141928', color: hType === t ? '#3d7fff' : '#7a88a8', fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', transition: 'all .2s' }}>
+                  {t === 'binary' ? '✓ Binary' : '📊 Metrisch'}
                 </button>
               ))}
             </div>
           </MF>
-          {hType==='metric' && (
+          {hType === 'metric' && (
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-              <MF label="Zielwert"><input type="number" inputMode="decimal" value={target} onChange={e=>setTarget(e.target.value)} placeholder="2" style={IS} /></MF>
-              <MF label="Einheit"><input value={unit} onChange={e=>setUnit(e.target.value)} placeholder="L, km, min" style={IS} /></MF>
+              <MF label="Zielwert"><input type="number" inputMode="decimal" value={target} onChange={e => setTarget(e.target.value)} placeholder="2" style={IS} /></MF>
+              <MF label="Einheit"><input value={unit} onChange={e => setUnit(e.target.value)} placeholder="L, km, min" style={IS} /></MF>
             </div>
           )}
           <MF label="Aktive Tage">
             <div style={{ display: 'flex', gap: 5 }}>
-              {DSHORT.map((d,i)=>(
-                <button key={i} onClick={()=>setActiveDays(prev=>prev.includes(i)?prev.filter(x=>x!==i):[...prev,i])}
-                  style={{ flex: 1, height: 36, borderRadius: 7, border: `1px solid ${activeDays.includes(i)?'#3d7fff':'#1e2840'}`, background: activeDays.includes(i)?'rgba(61,127,255,.15)':'#141928', color: activeDays.includes(i)?'#3d7fff':'#3d4f68', fontSize: 11, fontWeight: 700, cursor: 'pointer', transition: 'all .15s' }}>{d}</button>
+              {DSHORT.map((d, i) => (
+                <button key={i} onClick={() => setActiveDays(prev => prev.includes(i) ? prev.filter(x => x !== i) : [...prev, i])}
+                  style={{ flex: 1, height: 38, borderRadius: 7, border: `1px solid ${activeDays.includes(i) ? '#3d7fff' : '#1e2840'}`, background: activeDays.includes(i) ? 'rgba(61,127,255,.15)' : '#141928', color: activeDays.includes(i) ? '#3d7fff' : '#3d4f68', fontSize: 11, fontWeight: 700, cursor: 'pointer', transition: 'all .15s' }}>{d}</button>
               ))}
             </div>
             <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
-              {[['Alle',[0,1,2,3,4,5,6]],['Mo–Fr',[0,1,2,3,4]],['WE',[5,6]]].map(([l,d])=>(
-                <button key={l as string} onClick={()=>setActiveDays(d as number[])} style={{ padding: '6px 10px', background: '#141928', border: '1px solid #1e2840', borderRadius: 6, fontSize: 11, color: '#7a88a8', cursor: 'pointer' }}>{l as string}</button>
+              {[['Alle', [0,1,2,3,4,5,6]], ['Mo–Fr', [0,1,2,3,4]], ['WE', [5,6]]].map(([l, d]) => (
+                <button key={l as string} onClick={() => setActiveDays(d as number[])} style={{ padding: '6px 10px', background: '#141928', border: '1px solid #1e2840', borderRadius: 6, fontSize: 11, color: '#7a88a8', cursor: 'pointer' }}>{l as string}</button>
               ))}
             </div>
           </MF>
           <MF label="Farbe">
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              {CNAMES.map(cn=>(
-                <button key={cn} onClick={()=>setColor(cn)} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '7px 12px', borderRadius: 8, border: `1px solid ${color===cn?COLORS[cn]:'#1e2840'}`, background: color===cn?COLORS[cn]+'18':'#141928', color: color===cn?COLORS[cn]:'#7a88a8', fontSize: 12, fontWeight: 600, cursor: 'pointer', transition: 'all .2s' }}>
+              {CNAMES.map(cn => (
+                <button key={cn} onClick={() => setColor(cn)} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '7px 12px', borderRadius: 8, border: `1px solid ${color === cn ? COLORS[cn] : '#1e2840'}`, background: color === cn ? COLORS[cn] + '18' : '#141928', color: color === cn ? COLORS[cn] : '#7a88a8', fontSize: 12, fontWeight: 600, cursor: 'pointer', transition: 'all .2s' }}>
                   <div style={{ width: 9, height: 9, borderRadius: '50%', background: COLORS[cn] }} />{cn}
                 </button>
               ))}
             </div>
           </MF>
         </>}
-        {type==='project' && <>
-          <MF label="Deadline"><input value={deadline} onChange={e=>setDeadline(e.target.value)} placeholder="Q2 2026" style={IS} /></MF>
+        {type === 'project' && <>
+          <MF label="Deadline"><input value={deadline} onChange={e => setDeadline(e.target.value)} placeholder="Q2 2026" style={IS} /></MF>
           <MF label="Farbe">
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              {CNAMES.map(cn=><div key={cn} onClick={()=>setColor(cn)} style={{ width: 26, height: 26, borderRadius: '50%', background: COLORS[cn], border: `2.5px solid ${color===cn?'#dce4f5':'transparent'}`, cursor: 'pointer', transform: color===cn?'scale(1.2)':'scale(1)', transition: 'all .15s' }}/>)}
+              {CNAMES.map(cn => <div key={cn} onClick={() => setColor(cn)} style={{ width: 28, height: 28, borderRadius: '50%', background: COLORS[cn], border: `2.5px solid ${color === cn ? '#dce4f5' : 'transparent'}`, cursor: 'pointer', transform: color === cn ? 'scale(1.2)' : 'scale(1)', transition: 'all .15s' }} />)}
             </div>
           </MF>
           <MF label="Items">
-            {projItems.map((item,i)=>(
+            {projItems.map((item, i) => (
               <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-                <input value={item} onChange={e=>{const arr=[...projItems];arr[i]=e.target.value;setProjItems(arr)}} placeholder={`Item ${i+1}…`} style={{...IS,fontSize:13,padding:'9px 12px'}} />
-                {projItems.length>1 && <button onClick={()=>setProjItems(projItems.filter((_,j)=>j!==i))} style={{ padding: '0 12px', background: 'rgba(127,29,29,.5)', border: '1px solid rgba(204,41,64,.5)', color: '#ff4d6a', borderRadius: 7, cursor: 'pointer', fontSize: 13, flexShrink: 0 }}>✕</button>}
+                <input value={item} onChange={e => { const arr = [...projItems]; arr[i] = e.target.value; setProjItems(arr) }} placeholder={`Item ${i + 1}…`} style={{ ...IS, fontSize: 13, padding: '9px 12px' }} />
+                {projItems.length > 1 && <button onClick={() => setProjItems(projItems.filter((_, j) => j !== i))} style={{ padding: '0 12px', background: 'rgba(127,29,29,.5)', border: '1px solid rgba(204,41,64,.5)', color: '#ff4d6a', borderRadius: 7, cursor: 'pointer', fontSize: 13, flexShrink: 0 }}>✕</button>}
               </div>
             ))}
-            <button onClick={()=>setProjItems([...projItems,''])} style={{ width: '100%', padding: 10, background: '#1c2235', border: '1px solid #2d3a55', borderRadius: 8, color: '#7a88a8', cursor: 'pointer', fontSize: 13, fontFamily: 'inherit' }}>+ Item hinzufügen</button>
+            <button onClick={() => setProjItems([...projItems, ''])} style={{ width: '100%', padding: 10, background: '#1c2235', border: '1px solid #2d3a55', borderRadius: 8, color: '#7a88a8', cursor: 'pointer', fontSize: 13, fontFamily: 'inherit' }}>+ Item hinzufügen</button>
           </MF>
         </>}
         <button onClick={submit} style={{ width: '100%', padding: 14, background: 'linear-gradient(135deg,#2563d4,#7c4fd4)', border: 'none', borderRadius: 11, color: '#fff', fontSize: 15, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', marginTop: 4 }}>
-          {editId?'Änderungen speichern':type==='task'?'Task erstellen':type==='habit'?'Habit hinzufügen':'Projekt erstellen'}
+          {editId ? 'Änderungen speichern' : type === 'task' ? 'Task erstellen' : type === 'habit' ? 'Habit hinzufügen' : 'Projekt erstellen'}
         </button>
       </div>
     </div>
@@ -1089,9 +1245,9 @@ function AddModal({ type: initType, editId, habits, tasks, projects, onClose, on
 
   if (isMobile) {
     return (
-      <div style={{ position: 'fixed', inset: 0, zIndex: 200, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }} onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div style={{ position: 'fixed', inset: 0, zIndex: 200, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
         <div style={{ background: 'rgba(0,0,0,.5)', position: 'absolute', inset: 0 }} onClick={onClose} />
-        <div style={{ background: '#0f1420', borderRadius: '20px 20px 0 0', borderTop: '1px solid #2d3a55', padding: '20px 20px calc(20px + env(safe-area-inset-bottom,0px))', maxHeight: '92vh', overflowY: 'auto', position: 'relative', animation: 'sheetIn .3s cubic-bezier(.34,1.2,.64,1)', zIndex: 1 }}>
+        <div style={{ background: '#0f1420', borderRadius: '20px 20px 0 0', borderTop: '1px solid #2d3a55', padding: '16px 20px', paddingBottom: `calc(20px + env(safe-area-inset-bottom,0px))`, maxHeight: '94vh', overflowY: 'auto', position: 'relative', animation: 'sheetIn .3s cubic-bezier(.34,1.2,.64,1)', zIndex: 1 }}>
           <div style={{ width: 36, height: 4, borderRadius: 2, background: '#2d3a55', margin: '0 auto 20px' }} />
           {content}
         </div>
@@ -1100,7 +1256,7 @@ function AddModal({ type: initType, editId, habits, tasks, projects, onClose, on
   }
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.75)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }} onClick={e=>e.target===e.currentTarget&&onClose()}>
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.75)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }} onClick={e => e.target === e.currentTarget && onClose()}>
       <div style={{ background: '#0f1420', border: '1px solid #2d3a55', borderRadius: 22, width: 520, maxWidth: '94vw', maxHeight: '90vh', overflowY: 'auto', padding: 28, animation: 'modalIn .35s cubic-bezier(.34,1.4,.64,1)' }}>
         {content}
       </div>
@@ -1110,41 +1266,44 @@ function AddModal({ type: initType, editId, habits, tasks, projects, onClose, on
 
 function ModalWrapper({ children, onClose, noPad }: { children: React.ReactNode; onClose: () => void; noPad?: boolean }) {
   const isMobile = useIsMobile()
-  const style: React.CSSProperties = { background: '#0f1420', border: '1px solid #2d3a55', borderRadius: isMobile?'20px 20px 0 0':22, width: isMobile?'100%':560, maxWidth: isMobile?'100%':'94vw', maxHeight: isMobile?'88vh':'85vh', overflowY: 'auto', padding: noPad?0:28, animation: isMobile?'sheetIn .3s ease':'modalIn .3s ease', position: 'relative' }
-  if (isMobile) return (
-    <div style={{ position: 'fixed', inset: 0, zIndex: 200, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
-      <div style={{ background: 'rgba(0,0,0,.5)', position: 'absolute', inset: 0 }} onClick={onClose} />
-      <div style={{ ...style, paddingBottom: `calc(${noPad?0:28}px + env(safe-area-inset-bottom,0px))`, zIndex: 1 }}>
-        {!noPad && <div style={{ width: 36, height: 4, borderRadius: 2, background: '#2d3a55', margin: '0 auto 20px' }} />}
+  if (isMobile) {
+    return (
+      <div style={{ position: 'fixed', inset: 0, zIndex: 200, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
+        <div style={{ background: 'rgba(0,0,0,.5)', position: 'absolute', inset: 0 }} onClick={onClose} />
+        <div style={{ background: '#0f1420', borderRadius: '20px 20px 0 0', borderTop: '1px solid #2d3a55', padding: noPad ? 0 : '20px', paddingBottom: `calc(${noPad ? 0 : 20}px + env(safe-area-inset-bottom,0px))`, maxHeight: '85vh', overflowY: 'auto', position: 'relative', animation: 'sheetIn .3s ease', zIndex: 1 }}>
+          {!noPad && <div style={{ width: 36, height: 4, borderRadius: 2, background: '#2d3a55', margin: '0 auto 20px' }} />}
+          {children}
+        </div>
+      </div>
+    )
+  }
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.75)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }} onClick={e => e.target === e.currentTarget && onClose()}>
+      <div style={{ background: '#0f1420', border: '1px solid #2d3a55', borderRadius: 22, width: 560, maxWidth: '94vw', maxHeight: '85vh', overflowY: 'auto', padding: noPad ? 0 : 28, animation: 'modalIn .3s ease' }}>
         {children}
       </div>
     </div>
   )
-  return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.75)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }} onClick={e=>e.target===e.currentTarget&&onClose()}>
-      <div style={style}>{children}</div>
-    </div>
-  )
 }
 
-// ── Micro components ─────────────────────────────────────
+// ── Micro components ──────────────────────────────────────
 function MF({ label, children }: { label: string; children: React.ReactNode }) {
   return <div><label style={{ display: 'block', fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1.5, color: '#3d4f68', marginBottom: 6 }}>{label}</label>{children}</div>
 }
 function EditBtn({ onClick }: { onClick: () => void }) {
-  return <button onClick={onClick} style={{ width: 24, height: 24, borderRadius: 5, border: '1px solid #1e2840', background: 'transparent', color: '#3d4f68', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, flexShrink: 0, transition: 'all .15s' }} onMouseEnter={e=>{(e.currentTarget as HTMLElement).style.borderColor='#3d7fff';(e.currentTarget as HTMLElement).style.color='#3d7fff'}} onMouseLeave={e=>{(e.currentTarget as HTMLElement).style.borderColor='#1e2840';(e.currentTarget as HTMLElement).style.color='#3d4f68'}}>✏</button>
+  return <button onClick={onClick} style={{ width: 24, height: 24, borderRadius: 5, border: '1px solid #1e2840', background: 'transparent', color: '#3d4f68', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, flexShrink: 0, transition: 'all .15s' }} onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = '#3d7fff'; (e.currentTarget as HTMLElement).style.color = '#3d7fff' }} onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = '#1e2840'; (e.currentTarget as HTMLElement).style.color = '#3d4f68' }}>✏</button>
 }
 function PrioBadge({ prio }: { prio: Priority }) {
-  const s: Record<Priority, React.CSSProperties> = { high:{background:'rgba(255,77,106,.15)',color:'#ff4d6a',border:'1px solid rgba(255,77,106,.2)'}, med:{background:'rgba(255,184,48,.12)',color:'#ffb830',border:'1px solid rgba(255,184,48,.18)'}, low:{background:'#1c2235',color:'#3d4f68',border:'1px solid #1e2840'} }
+  const s: Record<Priority, React.CSSProperties> = { high: { background: 'rgba(255,77,106,.15)', color: '#ff4d6a', border: '1px solid rgba(255,77,106,.2)' }, med: { background: 'rgba(255,184,48,.12)', color: '#ffb830', border: '1px solid rgba(255,184,48,.18)' }, low: { background: '#1c2235', color: '#3d4f68', border: '1px solid #1e2840' } }
   return <span style={{ fontSize: 9, fontWeight: 700, padding: '2px 7px', borderRadius: 4, textTransform: 'uppercase', letterSpacing: '.8px', ...s[prio] }}>{prio}</span>
 }
 function SortBar({ sort, onChange }: { sort: SortMode; onChange: (s: SortMode) => void }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
       <span style={{ fontSize: 10, color: '#3d4f68', textTransform: 'uppercase', letterSpacing: 1 }}>Sort:</span>
-      {(['prio','due','alpha'] as SortMode[]).map(s=>(
-        <button key={s} onClick={()=>onChange(s)} style={{ padding: '4px 9px', background: sort===s?'rgba(61,127,255,.12)':'#141928', border: `1px solid ${sort===s?'#3d7fff':'#1e2840'}`, borderRadius: 6, fontSize: 10, fontWeight: 700, color: sort===s?'#3d7fff':'#3d4f68', cursor: 'pointer', fontFamily: 'var(--mono)', transition: 'all .15s' }}>
-          {{prio:'Priorität',due:'Fälligkeit',alpha:'A–Z'}[s]}
+      {(['prio', 'due', 'alpha'] as SortMode[]).map(s => (
+        <button key={s} onClick={() => onChange(s)} style={{ padding: '4px 9px', background: sort === s ? 'rgba(61,127,255,.12)' : '#141928', border: `1px solid ${sort === s ? '#3d7fff' : '#1e2840'}`, borderRadius: 6, fontSize: 10, fontWeight: 700, color: sort === s ? '#3d7fff' : '#3d4f68', cursor: 'pointer', fontFamily: 'var(--mono)', transition: 'all .15s' }}>
+          {{ prio: 'Priorität', due: 'Fälligkeit', alpha: 'A–Z' }[s]}
         </button>
       ))}
     </div>
@@ -1152,13 +1311,13 @@ function SortBar({ sort, onChange }: { sort: SortMode; onChange: (s: SortMode) =
 }
 function Btn({ onClick, children, ghost, small, disabled }: any) {
   return (
-    <button onClick={onClick} disabled={disabled} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: small?'7px 14px':'11px 20px', background: ghost?'rgba(255,255,255,.04)':'linear-gradient(135deg,#2563d4,#7c4fd4)', border: ghost?'1px solid #2d3a55':'none', borderRadius: 10, color: ghost?'#7a88a8':'#fff', fontSize: small?12:13, fontWeight: 700, cursor: disabled?'not-allowed':'pointer', fontFamily: 'inherit', opacity: disabled?.4:1, transition: 'all .2s', whiteSpace: 'nowrap' }}>
+    <button onClick={onClick} disabled={disabled} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: small ? '7px 14px' : '11px 20px', background: ghost ? 'rgba(255,255,255,.04)' : 'linear-gradient(135deg,#2563d4,#7c4fd4)', border: ghost ? '1px solid #2d3a55' : 'none', borderRadius: 10, color: ghost ? '#7a88a8' : '#fff', fontSize: small ? 12 : 13, fontWeight: 700, cursor: disabled ? 'not-allowed' : 'pointer', fontFamily: 'inherit', opacity: disabled ? .4 : 1, transition: 'all .2s', whiteSpace: 'nowrap' }}>
       {children}
     </button>
   )
 }
 function Empty({ children }: { children: React.ReactNode }) {
-  return <div style={{ fontSize: 12, color: '#3d4f68', textAlign: 'center', padding: '20px 0', animation: 'fadeIn .4s ease' }}>{children}</div>
+  return <div style={{ fontSize: 12, color: '#3d4f68', textAlign: 'center', padding: '20px 0' }}>{children}</div>
 }
 
 const ghostBtnStyle: React.CSSProperties = { fontSize: 11, color: '#7a88a8', background: '#1c2235', border: '1px solid #2d3a55', borderRadius: 5, padding: '3px 8px', cursor: 'pointer', flexShrink: 0 }
