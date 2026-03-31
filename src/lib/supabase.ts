@@ -10,8 +10,6 @@ export async function dbLoad(table: string) {
   return data
 }
 
-// supabase-js handles jsonb columns natively as JS arrays/objects.
-// DO NOT JSON.stringify – passing a string to a jsonb column breaks upsert silently.
 export async function dbUpsert(table: string, rows: any[]) {
   const { error } = await supabase.from(table).upsert(rows, { onConflict: 'id' })
   if (error) console.error('upsert error', table, error)
@@ -27,12 +25,8 @@ export async function saveDailySummary(
   habitsSnapshot: any[], tasksSnapshot: any[]
 ) {
   const { error } = await supabase.from('daily_summaries').upsert({
-    date,
-    life_score: lifeScore,
-    habit_score: habitScore,
-    task_score: taskScore,
-    habits_snapshot: habitsSnapshot,   // native array, not stringified
-    tasks_snapshot: tasksSnapshot,     // native array, not stringified
+    date, life_score: lifeScore, habit_score: habitScore, task_score: taskScore,
+    habits_snapshot: habitsSnapshot, tasks_snapshot: tasksSnapshot,
   }, { onConflict: 'date' })
   if (error) console.error('summary error', error)
 }
@@ -47,12 +41,17 @@ export async function loadHistory(): Promise<{ date: string; life_score: number;
   return data || []
 }
 
+// Safe delete – only runs if done_at column exists
 export async function deleteOldCompletedTasks() {
-  const cutoff = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString()
-  const { error } = await supabase
-    .from('tasks')
-    .delete()
-    .eq('done', true)
-    .lt('done_at', cutoff)
-  if (error) console.error('deleteOld', error)
+  try {
+    const cutoff = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString()
+    const { error } = await supabase
+      .from('tasks')
+      .delete()
+      .eq('done', true)
+      .lt('done_at', cutoff)
+    if (error) console.warn('deleteOldCompletedTasks skipped:', error.message)
+  } catch (e) {
+    console.warn('deleteOldCompletedTasks failed silently', e)
+  }
 }
