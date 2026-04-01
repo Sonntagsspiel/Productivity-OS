@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { dbLoad, dbUpsert, dbDelete, saveDailySummary, loadHistory, deleteOldCompletedTasks } from '@/lib/supabase'
 
 // ── Types ────────────────────────────────────────────────
@@ -162,6 +162,7 @@ export default function App() {
   const [modal,setModal]=useState<{type:'task'|'habit'|'project';editId?:string}|null>(null)
   const [analysisOpen,setAnalysisOpen]=useState(false)
   const [manageOpen,setManageOpen]=useState(false)
+  const [importOpen,setImportOpen]=useState(false)
   const [showSubs,setShowSubs]=useState<Record<string,boolean>>({})
   const [completing,setCompleting]=useState<Set<string>>(new Set())
   const [lastReset,setLastReset]=useState('')
@@ -209,6 +210,18 @@ export default function App() {
     },60000)
     return()=>clearInterval(iv)
   },[loading,lastReset])
+
+  // Ctrl+I / Cmd+I opens import modal
+  useEffect(()=>{
+    const handler=(e:KeyboardEvent)=>{
+      if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='i'){
+        e.preventDefault()
+        setImportOpen(true)
+      }
+    }
+    window.addEventListener('keydown',handler)
+    return()=>window.removeEventListener('keydown',handler)
+  },[])
 
   const calcScores=useCallback(()=>{
     const th=habits.filter(h=>h.active_days.includes(TODAY_DOW))
@@ -451,17 +464,99 @@ export default function App() {
     </div>
   )
 
+  // ── Import handler ────────────────────────────────────
+  async function handleImport(data: any) {
+    const results = { tasks: 0, habits: 0, projects: 0, errors: [] as string[] }
+
+    // Import tasks
+    if (Array.isArray(data.tasks)) {
+      for (const raw of data.tasks) {
+        if (!raw.title?.trim()) continue
+        try {
+          const t = {
+            id: Date.now().toString() + Math.random().toString(36).slice(2),
+            title: raw.title.trim(),
+            prio: (['high','med','low'].includes(raw.prio) ? raw.prio : 'med') as any,
+            due: raw.due || '',
+            rollover: false,
+            done: false,
+            done_at: null,
+            subs: Array.isArray(raw.subs) ? raw.subs.map((s: any) => ({ t: String(s), d: false })) : [],
+          }
+          setTasks(prev => [...prev, t])
+          await dbUpsert('tasks', [t])
+          results.tasks++
+        } catch(e) { results.errors.push(`Task "${raw.title}": ${e}`) }
+      }
+    }
+
+    // Import habits
+    if (Array.isArray(data.habits)) {
+      for (const raw of data.habits) {
+        if (!raw.name?.trim()) continue
+        try {
+          const validColors = ['green','blue','purple','amber','red','teal']
+          const h: any = {
+            id: Date.now().toString() + Math.random().toString(36).slice(2),
+            name: raw.name.trim(),
+            type: raw.type === 'metric' ? 'metric' : 'binary',
+            color: validColors.includes(raw.color) ? raw.color : 'green',
+            active_days: Array.isArray(raw.active_days) ? raw.active_days : [0,1,2,3,4,5,6],
+            done: false,
+            pct: 0,
+            target: raw.type === 'metric' ? (parseFloat(raw.target) || 1) : null,
+            unit: raw.type === 'metric' ? (raw.unit || '') : null,
+            current_val: 0,
+          }
+          setHabits(prev => [...prev, h])
+          await dbUpsert('habits', [h])
+          results.habits++
+        } catch(e) { results.errors.push(`Habit "${raw.name}": ${e}`) }
+      }
+    }
+
+    // Import projects
+    if (Array.isArray(data.projects)) {
+      for (const raw of data.projects) {
+        if (!raw.name?.trim()) continue
+        try {
+          const validColors = ['green','blue','purple','amber','red','teal']
+          const validStatuses = ['on-track','at-risk','done','paused']
+          const p = {
+            id: Date.now().toString() + Math.random().toString(36).slice(2),
+            name: raw.name.trim(),
+            color: validColors.includes(raw.color) ? raw.color : 'blue',
+            deadline: raw.deadline || '',
+            status: validStatuses.includes(raw.status) ? raw.status : 'on-track',
+            items: Array.isArray(raw.items) ? raw.items.map((item: any) => ({
+              t: String(item.title || item.t || '').trim(),
+              d: false,
+              subs: Array.isArray(item.subs) ? item.subs.map((s: any) => ({ t: String(s), d: false })) : [],
+            })).filter((i: any) => i.t) : [],
+          }
+          setProjects(prev => [...prev, p])
+          await dbUpsert('projects', [p])
+          results.projects++
+        } catch(e) { results.errors.push(`Projekt "${raw.name}": ${e}`) }
+      }
+    }
+
+    return results
+  }
+
   const modalsEl=(
     <Modals modal={modal} setModal={setModal}
       analysisOpen={analysisOpen} setAnalysisOpen={setAnalysisOpen}
       manageOpen={manageOpen} setManageOpen={setManageOpen}
+      importOpen={importOpen} setImportOpen={setImportOpen}
       habits={habits} tasks={tasks} projects={projects}
       hScore={hScore} tScore={tScore} life={life} history={history} streak={streak}
       onSaveHabit={handleSaveHabit} onSaveTask={handleSaveTask} onSaveProject={handleSaveProject}
       onEditHabit={h=>{setManageOpen(false);setModal({type:'habit',editId:h.id})}}
       onEditTask={t=>{setManageOpen(false);setModal({type:'task',editId:t.id})}}
       onDeleteHabit={deleteHabit} onDeleteTask={deleteTask}
-      onSaveAnalysis={saveAnalysis}/>
+      onSaveAnalysis={saveAnalysis}
+      onImport={handleImport}/>
   )
 
   // ── DESKTOP ───────────────────────────────────────────
@@ -479,6 +574,7 @@ export default function App() {
           <div style={{display:'flex',gap:8,position:'relative'}}>
             <Btn onClick={()=>setManageOpen(true)} ghost small>📋 Verwalten</Btn>
             <Btn onClick={()=>setAnalysisOpen(true)} ghost small>📊 Tagesanalyse</Btn>
+            <Btn onClick={()=>setImportOpen(true)} ghost small>⬆ Import</Btn>
             <Btn onClick={()=>setModal({type:'task'})} small>+ Hinzufügen</Btn>
           </div>
         </div>
@@ -523,6 +619,7 @@ export default function App() {
         <div style={{display:'flex',gap:8,marginBottom:8}}>
           <button onClick={()=>setManageOpen(true)} style={{flex:1,padding:'7px 10px',background:'rgba(255,255,255,.04)',border:'1px solid #2d3a55',borderRadius:9,color:'#7a88a8',fontSize:11,fontWeight:600,cursor:'pointer',fontFamily:'inherit'}}>📋 Verwalten</button>
           <button onClick={()=>setAnalysisOpen(true)} style={{flex:1,padding:'7px 10px',background:'rgba(61,127,255,.08)',border:'1px solid rgba(61,127,255,.2)',borderRadius:9,color:'#3d7fff',fontSize:11,fontWeight:600,cursor:'pointer',fontFamily:'inherit'}}>📊 Analyse</button>
+          <button onClick={()=>setImportOpen(true)} style={{flex:1,padding:'7px 10px',background:'rgba(0,232,122,.08)',border:'1px solid rgba(0,232,122,.2)',borderRadius:9,color:'#00e87a',fontSize:11,fontWeight:600,cursor:'pointer',fontFamily:'inherit'}}>⬆ Import</button>
         </div>
 
         {/* Row 3: Score circles left | + button right */}
@@ -962,12 +1059,13 @@ function Analytics({history,compact}:{history:DaySummary[];compact?:boolean}){
 }
 
 // ── Modals wrapper ────────────────────────────────────────
-function Modals({modal,setModal,analysisOpen,setAnalysisOpen,manageOpen,setManageOpen,habits,tasks,projects,hScore,tScore,life,history,streak,onSaveHabit,onSaveTask,onSaveProject,onEditHabit,onEditTask,onDeleteHabit,onDeleteTask,onSaveAnalysis}:any){
+function Modals({modal,setModal,analysisOpen,setAnalysisOpen,manageOpen,setManageOpen,importOpen,setImportOpen,habits,tasks,projects,hScore,tScore,life,history,streak,onSaveHabit,onSaveTask,onSaveProject,onEditHabit,onEditTask,onDeleteHabit,onDeleteTask,onSaveAnalysis,onImport}:any){
   return(
     <>
       {modal&&<AddModal type={modal.type} editId={modal.editId} habits={habits} tasks={tasks} projects={projects} onClose={()=>setModal(null)} onSaveHabit={onSaveHabit} onSaveTask={onSaveTask} onSaveProject={onSaveProject}/>}
       {analysisOpen&&<AnalysisModal hScore={hScore} tScore={tScore} life={life} history={history} projects={projects} streak={streak} onClose={()=>setAnalysisOpen(false)} onSave={onSaveAnalysis}/>}
       {manageOpen&&<ManageModal habits={habits} tasks={tasks} onClose={()=>setManageOpen(false)} onEditHabit={onEditHabit} onEditTask={onEditTask} onDeleteHabit={onDeleteHabit} onDeleteTask={onDeleteTask}/>}
+      {importOpen&&<ImportModal onClose={()=>setImportOpen(false)} onImport={onImport}/>}
     </>
   )
 }
@@ -1250,3 +1348,224 @@ function Empty({children}:{children:React.ReactNode}){
 const GBS:React.CSSProperties={fontSize:11,color:'#7a88a8',background:'#1c2235',border:'1px solid #2d3a55',borderRadius:5,padding:'3px 8px',cursor:'pointer',flexShrink:0}
 const EBS:React.CSSProperties={padding:'5px 10px',background:'rgba(61,127,255,.08)',border:'1px solid rgba(61,127,255,.2)',borderRadius:6,color:'#3d7fff',cursor:'pointer',fontSize:11,fontWeight:600,flexShrink:0}
 const DBS:React.CSSProperties={padding:'5px 10px',background:'rgba(255,77,106,.08)',border:'1px solid rgba(255,77,106,.2)',borderRadius:6,color:'#ff4d6a',cursor:'pointer',fontSize:11,flexShrink:0}
+
+// ── Import Modal ──────────────────────────────────────────
+function ImportModal({onClose,onImport}:any){
+  const isMobile=useIsMobile()
+  const [stage,setStage]=useState<'drop'|'preview'|'done'>('drop')
+  const [parsed,setParsed]=useState<any>(null)
+  const [error,setError]=useState('')
+  const [results,setResults]=useState<any>(null)
+  const [loading,setLoading]=useState(false)
+  const fileRef=useRef<HTMLInputElement>(null)
+
+  function parseFile(file:File){
+    const reader=new FileReader()
+    reader.onload=e=>{
+      try{
+        const raw=JSON.parse(e.target?.result as string)
+        // Filter out _info, _version, _felder_* keys
+        const clean:any={}
+        if(Array.isArray(raw.tasks))clean.tasks=raw.tasks
+        if(Array.isArray(raw.habits))clean.habits=raw.habits
+        if(Array.isArray(raw.projects))clean.projects=raw.projects
+        setParsed(clean)
+        setError('')
+        setStage('preview')
+      }catch(err){
+        setError('Ungültige JSON-Datei. Bitte Vorlage verwenden.')
+      }
+    }
+    reader.readAsText(file)
+  }
+
+  function handleDrop(e:React.DragEvent){
+    e.preventDefault()
+    const file=e.dataTransfer.files[0]
+    if(file&&file.name.endsWith('.json'))parseFile(file)
+    else setError('Nur .json Dateien erlaubt')
+  }
+
+  async function doImport(){
+    setLoading(true)
+    const res=await onImport(parsed)
+    setResults(res)
+    setStage('done')
+    setLoading(false)
+  }
+
+  const S:React.CSSProperties={background:'#0f1420',border:'1px solid #2d3a55',borderRadius:isMobile?'20px 20px 0 0':22,width:isMobile?'100%':540,maxWidth:'94vw',maxHeight:isMobile?'90vh':'85vh',overflowY:'auto',padding:28,animation:isMobile?'sheetIn .3s ease':'modalIn .35s ease'}
+
+  const content=(
+    <div>
+      {/* Header */}
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:20}}>
+        <div>
+          <div style={{fontSize:18,fontWeight:800,letterSpacing:-.5}}>⬆ Import</div>
+          <div style={{fontSize:11,color:'#3d4f68',marginTop:3}}>
+            {isMobile?'Tippe auf "Datei wählen"':'Drücke '}
+            {!isMobile&&<kbd style={{background:'#1c2235',border:'1px solid #2d3a55',borderRadius:4,padding:'1px 6px',fontSize:10,fontFamily:'monospace'}}>Ctrl+I</kbd>}
+            {!isMobile&&' / '}
+            {!isMobile&&<kbd style={{background:'#1c2235',border:'1px solid #2d3a55',borderRadius:4,padding:'1px 6px',fontSize:10,fontFamily:'monospace'}}>Cmd+I</kbd>}
+            {!isMobile&&' um dies zu öffnen'}
+          </div>
+        </div>
+        <button onClick={onClose} style={{width:28,height:28,borderRadius:7,background:'#1c2235',border:'1px solid #2d3a55',color:'#7a88a8',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',fontSize:15}}>✕</button>
+      </div>
+
+      {/* Template download */}
+      <div style={{background:'rgba(0,232,122,.06)',border:'1px solid rgba(0,232,122,.2)',borderRadius:10,padding:'12px 16px',marginBottom:20,display:'flex',alignItems:'center',justifyContent:'space-between',gap:10}}>
+        <div>
+          <div style={{fontSize:13,fontWeight:600,color:'#00e87a'}}>Vorlage herunterladen</div>
+          <div style={{fontSize:11,color:'#7a88a8',marginTop:2}}>Ausfüllen und dann importieren</div>
+        </div>
+        <div style={{display:'flex',gap:8,flexShrink:0}}>
+          <a href="/import-template.json" download style={{padding:'7px 12px',background:'rgba(0,232,122,.12)',border:'1px solid rgba(0,232,122,.3)',borderRadius:8,color:'#00e87a',fontSize:11,fontWeight:600,textDecoration:'none',cursor:'pointer',whiteSpace:'nowrap'}}>
+            📄 Einfach
+          </a>
+          <a href="/import-vorlage-komplett.json" download style={{padding:'7px 12px',background:'rgba(0,232,122,.06)',border:'1px solid rgba(0,232,122,.2)',borderRadius:8,color:'#00e87a',fontSize:11,fontWeight:600,textDecoration:'none',cursor:'pointer',whiteSpace:'nowrap'}}>
+            📋 Komplett
+          </a>
+        </div>
+      </div>
+
+      {/* STAGE: DROP */}
+      {stage==='drop'&&(
+        <div>
+          <div
+            onDrop={handleDrop}
+            onDragOver={e=>e.preventDefault()}
+            onClick={()=>fileRef.current?.click()}
+            style={{border:'2px dashed #2d3a55',borderRadius:14,padding:'40px 20px',textAlign:'center',cursor:'pointer',transition:'all .2s',background:'#141928'}}
+            onMouseEnter={e=>{(e.currentTarget as HTMLElement).style.borderColor='#3d7fff';(e.currentTarget as HTMLElement).style.background='rgba(61,127,255,.04)'}}
+            onMouseLeave={e=>{(e.currentTarget as HTMLElement).style.borderColor='#2d3a55';(e.currentTarget as HTMLElement).style.background='#141928'}}>
+            <div style={{fontSize:36,marginBottom:12}}>📂</div>
+            <div style={{fontSize:14,fontWeight:600,color:'#dce4f5',marginBottom:6}}>
+              {isMobile?'Datei wählen':'JSON-Datei hier ablegen'}
+            </div>
+            <div style={{fontSize:12,color:'#3d4f68'}}>{isMobile?'Tippe zum Auswählen':'oder klicken zum Auswählen'}</div>
+            <input ref={fileRef} type="file" accept=".json" style={{display:'none'}} onChange={e=>{const f=e.target.files?.[0];if(f)parseFile(f)}}/>
+          </div>
+          {error&&<div style={{marginTop:12,padding:'10px 14px',background:'rgba(255,77,106,.1)',border:'1px solid rgba(255,77,106,.3)',borderRadius:8,color:'#ff4d6a',fontSize:13}}>{error}</div>}
+        </div>
+      )}
+
+      {/* STAGE: PREVIEW */}
+      {stage==='preview'&&parsed&&(
+        <div>
+          <div style={{fontSize:13,fontWeight:600,color:'#7a88a8',marginBottom:14,textTransform:'uppercase',letterSpacing:1}}>Vorschau</div>
+
+          {/* Tasks preview */}
+          {parsed.tasks?.length>0&&(
+            <div style={{marginBottom:14}}>
+              <div style={{fontSize:12,color:'#3d7fff',fontWeight:700,marginBottom:8,display:'flex',alignItems:'center',gap:6}}>
+                <span style={{background:'rgba(61,127,255,.15)',border:'1px solid rgba(61,127,255,.3)',borderRadius:4,padding:'1px 7px'}}>{parsed.tasks.length} Tasks</span>
+              </div>
+              {parsed.tasks.slice(0,5).map((t:any,i:number)=>(
+                <div key={i} style={{display:'flex',alignItems:'center',gap:8,padding:'7px 10px',background:'#141928',borderRadius:8,marginBottom:4,border:'1px solid #1e2840'}}>
+                  <div style={{width:7,height:7,borderRadius:'50%',background:{high:'#ff4d6a',med:'#ffb830',low:'#3d4f68'}[t.prio as string]||'#3d4f68',flexShrink:0}}/>
+                  <span style={{fontSize:12,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t.title}</span>
+                  {t.due&&<span style={{fontSize:10,color:'#3d4f68',fontFamily:'monospace',flexShrink:0}}>{t.due}</span>}
+                  {t.subs?.length>0&&<span style={{fontSize:10,color:'#3d4f68'}}>+{t.subs.length}</span>}
+                </div>
+              ))}
+              {parsed.tasks.length>5&&<div style={{fontSize:11,color:'#3d4f68',textAlign:'center',padding:'4px 0'}}>... +{parsed.tasks.length-5} weitere</div>}
+            </div>
+          )}
+
+          {/* Habits preview */}
+          {parsed.habits?.length>0&&(
+            <div style={{marginBottom:14}}>
+              <div style={{fontSize:12,color:'#00e87a',fontWeight:700,marginBottom:8}}>
+                <span style={{background:'rgba(0,232,122,.1)',border:'1px solid rgba(0,232,122,.25)',borderRadius:4,padding:'1px 7px'}}>{parsed.habits.length} Habits</span>
+              </div>
+              {parsed.habits.slice(0,4).map((h:any,i:number)=>{
+                const c={green:'#00e87a',blue:'#3d7fff',purple:'#9b6dff',amber:'#ffb830',red:'#ff4d6a',teal:'#00d4c8'}[h.color as string]||'#00e87a'
+                return(
+                  <div key={i} style={{display:'flex',alignItems:'center',gap:8,padding:'7px 10px',background:'#141928',borderRadius:8,marginBottom:4,border:'1px solid #1e2840'}}>
+                    <div style={{width:7,height:7,borderRadius:'50%',background:c,flexShrink:0}}/>
+                    <span style={{fontSize:12,flex:1}}>{h.name}</span>
+                    <span style={{fontSize:10,color:'#3d4f68'}}>{h.type}{h.type==='metric'?` · ${h.target} ${h.unit}`:''}</span>
+                    <span style={{fontSize:10,color:'#3d4f68'}}>{h.active_days?.length===7?'täglich':`${h.active_days?.length}d/W`}</span>
+                  </div>
+                )
+              })}
+              {parsed.habits.length>4&&<div style={{fontSize:11,color:'#3d4f68',textAlign:'center',padding:'4px 0'}}>... +{parsed.habits.length-4} weitere</div>}
+            </div>
+          )}
+
+          {/* Projects preview */}
+          {parsed.projects?.length>0&&(
+            <div style={{marginBottom:14}}>
+              <div style={{fontSize:12,color:'#9b6dff',fontWeight:700,marginBottom:8}}>
+                <span style={{background:'rgba(155,109,255,.1)',border:'1px solid rgba(155,109,255,.25)',borderRadius:4,padding:'1px 7px'}}>{parsed.projects.length} Projekte</span>
+              </div>
+              {parsed.projects.map((p:any,i:number)=>(
+                <div key={i} style={{display:'flex',alignItems:'center',gap:8,padding:'7px 10px',background:'#141928',borderRadius:8,marginBottom:4,border:'1px solid #1e2840'}}>
+                  <div style={{width:7,height:7,borderRadius:'50%',background:{green:'#00e87a',blue:'#3d7fff',purple:'#9b6dff',amber:'#ffb830',red:'#ff4d6a',teal:'#00d4c8'}[p.color as string]||'#3d7fff',flexShrink:0}}/>
+                  <span style={{fontSize:12,flex:1}}>{p.name}</span>
+                  <span style={{fontSize:10,color:'#3d4f68'}}>{p.items?.length||0} Items</span>
+                  {p.deadline&&<span style={{fontSize:10,color:'#3d4f68',fontFamily:'monospace'}}>{p.deadline}</span>}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {(!parsed.tasks?.length&&!parsed.habits?.length&&!parsed.projects?.length)&&(
+            <div style={{textAlign:'center',padding:'20px 0',color:'#3d4f68',fontSize:13}}>Keine gültigen Einträge gefunden. Bitte Vorlage verwenden.</div>
+          )}
+
+          <div style={{display:'flex',gap:8,marginTop:8}}>
+            <button onClick={()=>{setStage('drop');setParsed(null)}} style={{flex:1,padding:'11px',background:'#1c2235',border:'1px solid #2d3a55',borderRadius:10,color:'#7a88a8',cursor:'pointer',fontSize:13,fontWeight:600,fontFamily:'inherit'}}>
+              ← Andere Datei
+            </button>
+            <button onClick={doImport} disabled={loading||(!parsed.tasks?.length&&!parsed.habits?.length&&!parsed.projects?.length)}
+              style={{flex:2,padding:'11px',background:'linear-gradient(135deg,#2563d4,#7c4fd4)',border:'none',borderRadius:10,color:'#fff',cursor:'pointer',fontSize:13,fontWeight:700,fontFamily:'inherit',opacity:loading?0.7:1}}>
+              {loading?'Importiere…':'✓ Jetzt importieren'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* STAGE: DONE */}
+      {stage==='done'&&results&&(
+        <div style={{textAlign:'center'}}>
+          <div style={{fontSize:40,marginBottom:16}}>✅</div>
+          <div style={{fontSize:20,fontWeight:800,marginBottom:8}}>Import erfolgreich!</div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:10,margin:'20px 0'}}>
+            {[{val:results.tasks,lbl:'Tasks',c:'#3d7fff'},{val:results.habits,lbl:'Habits',c:'#00e87a'},{val:results.projects,lbl:'Projekte',c:'#9b6dff'}].map(s=>(
+              <div key={s.lbl} style={{background:'#141928',borderRadius:10,padding:14,border:'1px solid #1e2840'}}>
+                <div style={{fontFamily:'monospace',fontSize:24,fontWeight:700,color:s.c}}>{s.val}</div>
+                <div style={{fontSize:11,color:'#7a88a8',marginTop:3}}>{s.lbl}</div>
+              </div>
+            ))}
+          </div>
+          {results.errors?.length>0&&(
+            <div style={{padding:'10px 14px',background:'rgba(255,184,48,.08)',border:'1px solid rgba(255,184,48,.2)',borderRadius:8,marginBottom:16,textAlign:'left'}}>
+              <div style={{fontSize:12,color:'#ffb830',fontWeight:600,marginBottom:4}}>⚠ Einige Fehler:</div>
+              {results.errors.map((e:string,i:number)=><div key={i} style={{fontSize:11,color:'#7a88a8'}}>{e}</div>)}
+            </div>
+          )}
+          <button onClick={onClose} style={{padding:'11px 28px',background:'linear-gradient(135deg,#2563d4,#7c4fd4)',border:'none',borderRadius:10,color:'#fff',fontSize:14,fontWeight:700,cursor:'pointer',fontFamily:'inherit'}}>
+            Fertig
+          </button>
+        </div>
+      )}
+    </div>
+  )
+
+  if(isMobile) return(
+    <div style={{position:'fixed',inset:0,zIndex:200,display:'flex',flexDirection:'column',justifyContent:'flex-end'}}>
+      <div style={{background:'rgba(0,0,0,.5)',position:'absolute',inset:0}} onClick={onClose}/>
+      <div style={{...S,zIndex:1}}>
+        <div style={{width:36,height:4,borderRadius:2,background:'#2d3a55',margin:'0 auto 20px'}}/>
+        {content}
+      </div>
+    </div>
+  )
+  return(
+    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,.75)',backdropFilter:'blur(8px)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:200}} onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div style={S}>{content}</div>
+    </div>
+  )
+}
