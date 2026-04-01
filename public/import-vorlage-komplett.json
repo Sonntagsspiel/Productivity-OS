@@ -1,0 +1,123 @@
+{
+  "_info": "Productivity OS – Import Vorlage. Felder die mit '_' beginnen werden ignoriert.",
+  "_version": 1,
+  "_anleitung": {
+    "oeffnen": "Ctrl+I (Windows/Linux) oder Cmd+I (Mac)",
+    "schritte": [
+      "1. Diese Datei als .json speichern",
+      "2. Felder ausfüllen – nicht benötigte Einträge löschen",
+      "3. App öffnen, Ctrl+I drücken, Datei auswählen",
+      "4. Vorschau prüfen, dann importieren"
+    ]
+  },
+
+  "_felder_tasks": {
+    "title": "Pflichtfeld – Name der Task",
+    "prio": "high | med | low  (Standard: med)",
+    "due": "Datum als YYYY-MM-DD oder leer lassen",
+    "subs": "Liste von Strings für Unteraufgaben, oder []"
+  },
+
+  "_felder_habits": {
+    "name": "Pflichtfeld – Name des Habits",
+    "type": "binary | metric  (Standard: binary)",
+    "color": "green | blue | purple | amber | red | teal  (Standard: green)",
+    "active_days": "Array mit Wochentagen: 0=Mo, 1=Di, 2=Mi, 3=Do, 4=Fr, 5=Sa, 6=So",
+    "target": "Nur bei type=metric – Zielwert als Zahl",
+    "unit": "Nur bei type=metric – Einheit als Text z.B. 'L', 'km', 'min'"
+  },
+
+  "_felder_projects": {
+    "name": "Pflichtfeld – Name des Projekts",
+    "color": "green | blue | purple | amber | red | teal  (Standard: blue)",
+    "deadline": "Freitext z.B. 'Q2 2026' oder leer lassen",
+    "status": "on-track | at-risk | done | paused  (Standard: on-track)",
+    "items": "Liste von Projekt-Items (siehe Beispiel)"
+  },
+
+  "tasks": [
+    {
+      "title": "Bericht fertigstellen",
+      "prio": "high",
+      "due": "2026-04-20",
+      "subs": ["Einleitung schreiben", "Grafiken erstellen", "Korrektur lesen"]
+    },
+    {
+      "title": "E-Mails beantworten",
+      "prio": "med",
+      "due": "",
+      "subs": []
+    },
+    {
+      "title": "Einkaufen",
+      "prio": "low",
+      "due": "2026-04-10",
+      "subs": ["Gemüse", "Obst"]
+    }
+  ],
+
+  "habits": [
+    {
+      "name": "Meditieren",
+      "type": "binary",
+      "color": "purple",
+      "active_days": [0, 1, 2, 3, 4, 5, 6]
+    },
+    {
+      "name": "Laufen",
+      "type": "binary",
+      "color": "green",
+      "active_days": [0, 2, 4]
+    },
+    {
+      "name": "Wasser trinken",
+      "type": "metric",
+      "target": 2.5,
+      "unit": "L",
+      "color": "blue",
+      "active_days": [0, 1, 2, 3, 4, 5, 6]
+    },
+    {
+      "name": "Lesen",
+      "type": "metric",
+      "target": 30,
+      "unit": "min",
+      "color": "amber",
+      "active_days": [0, 1, 2, 3, 4, 5, 6]
+    }
+  ],
+
+  "projects": [
+    {
+      "name": "App Launch",
+      "color": "blue",
+      "deadline": "Q2 2026",
+      "status": "on-track",
+      "items": [
+        {
+          "title": "Backend fertigstellen",
+          "subs": ["API Routes", "Datenbank Schema", "Tests"]
+        },
+        {
+          "title": "Frontend polieren",
+          "subs": ["Mobile Ansicht", "Dark Mode", "Animationen"]
+        },
+        {
+          "title": "Deployment",
+          "subs": []
+        }
+      ]
+    },
+    {
+      "name": "Fitness Ziel",
+      "color": "green",
+      "deadline": "Dezember 2026",
+      "status": "on-track",
+      "items": [
+        { "title": "Trainingsplan erstellen", "subs": [] },
+        { "title": "Ernährung umstellen", "subs": ["Meal Prep", "Kalorienzählen"] },
+        { "title": "10km unter 50min laufen", "subs": [] }
+      ]
+    }
+  ]
+}

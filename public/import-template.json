@@ -1,0 +1,55 @@
+{
+  "_info": "Productivity OS Import – Datei ausfüllen und mit Ctrl+I / Cmd+I importieren",
+  "_version": 1,
+
+  "tasks": [
+    {
+      "title": "Beispiel-Task",
+      "prio": "high",
+      "due": "2026-04-15",
+      "subs": ["Unteraufgabe 1", "Unteraufgabe 2"]
+    },
+    {
+      "title": "Noch ein Task",
+      "prio": "med",
+      "due": "",
+      "subs": []
+    }
+  ],
+
+  "habits": [
+    {
+      "name": "Meditieren",
+      "type": "binary",
+      "color": "green",
+      "active_days": [0, 1, 2, 3, 4, 5, 6]
+    },
+    {
+      "name": "Wasser trinken",
+      "type": "metric",
+      "target": 2,
+      "unit": "L",
+      "color": "blue",
+      "active_days": [0, 1, 2, 3, 4, 5, 6]
+    }
+  ],
+
+  "projects": [
+    {
+      "name": "Mein Projekt",
+      "color": "purple",
+      "deadline": "Q3 2026",
+      "status": "on-track",
+      "items": [
+        {
+          "title": "Phase 1",
+          "subs": ["Unteraufgabe A", "Unteraufgabe B"]
+        },
+        {
+          "title": "Phase 2",
+          "subs": []
+        }
+      ]
+    }
+  ]
+}
