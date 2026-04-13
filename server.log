@@ -1,0 +1,17 @@
+
+> productivity-os@1.0.0 dev
+> next dev
+
+  ▲ Next.js 14.2.5
+  - Local:        http://localhost:3000
+  - Environments: .env.local
+
+ ✓ Starting...
+ ✓ Ready in 1943ms
+ ○ Compiling / ...
+ ✓ Compiled / in 4.1s (553 modules)
+ GET / 200 in 4454ms
+ ✓ Compiled in 732ms (539 modules)
+ GET / 200 in 230ms
+ GET / 200 in 37ms
+ GET / 200 in 32ms
